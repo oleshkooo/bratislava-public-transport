@@ -173,6 +173,11 @@ GTFS `shapes.txt` is stop-to-stop straight lines (§1), so the build step replac
 
 ## 5. Build milestones (order)
 
+> **Status 2026-07-07: M0–M9 all shipped.** Live at
+> <https://oleshkooo.github.io/bratislava-public-transport/> (GitHub Pages stands in for
+> Cloudflare/Vercel). Remaining: later phases P1 (real-time) and P2 (regional coverage),
+> both blocked on external data sources.
+
 - **M0 — Scaffold:** Vite + React + TS; MapLibre map with OpenFreeMap tiles centered on BA.
 - **M1 — Data pipeline:** `build-data` → `routes.json`, `stops.json`, `all-routes.geojson`;
   includes **geometry enrichment** (§2a) — precise polylines are a prerequisite for M2/M3,
