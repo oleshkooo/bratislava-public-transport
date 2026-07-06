@@ -17,13 +17,14 @@ const EMPTY_FC = {
 } as FeatureCollection
 
 function fitPadding() {
+  // Mobile: keep the focus area above the half-open drawer (55% snap point)
   return window.innerWidth >= 768
     ? { top: 48, bottom: 48, left: 440, right: 48 }
     : {
-        top: 32,
-        bottom: Math.round(window.innerHeight * 0.5),
-        left: 32,
-        right: 32,
+        top: 24,
+        bottom: Math.round(window.innerHeight * 0.58),
+        left: 24,
+        right: 24,
       }
 }
 
