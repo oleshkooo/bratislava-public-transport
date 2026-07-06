@@ -192,12 +192,15 @@ function stitchWays(ways: { lat: number; lon: number }[][]): {
 
 async function loadOsmGeometries(): Promise<OsmGeometry[]> {
   const cachePath = path.join(DATA_CACHE_DIR, "osm-geometries.json")
-  if (fs.existsSync(cachePath)) {
+  // OSM_REFRESH=1 (weekly CI) re-fetches from Overpass but keeps the committed
+  // cache as fallback when all endpoints fail.
+  const refresh = process.env.OSM_REFRESH === "1"
+  if (!refresh && fs.existsSync(cachePath)) {
     return JSON.parse(fs.readFileSync(cachePath, "utf8"))
   }
   let raw: { elements: Record<string, unknown>[] } | undefined
   const rawCachePath = path.join(CACHE_DIR, "osm-raw.json")
-  if (fs.existsSync(rawCachePath)) {
+  if (!refresh && fs.existsSync(rawCachePath)) {
     raw = JSON.parse(fs.readFileSync(rawCachePath, "utf8"))
   }
   if (!raw) console.log("Fetching OSM route relations from Overpass…")
@@ -219,10 +222,13 @@ async function loadOsmGeometries(): Promise<OsmGeometry[]> {
       console.warn(`  Overpass ${endpoint} failed: ${e}`)
     }
   }
-  if (!raw)
-    throw new Error(
-      "All Overpass endpoints failed and no cached geometries exist"
-    )
+  if (!raw) {
+    if (fs.existsSync(cachePath)) {
+      console.warn("  Overpass unavailable — falling back to committed geometry cache")
+      return JSON.parse(fs.readFileSync(cachePath, "utf8"))
+    }
+    throw new Error("All Overpass endpoints failed and no cached geometries exist")
+  }
 
   const geometries: OsmGeometry[] = []
   for (const el of raw.elements) {
