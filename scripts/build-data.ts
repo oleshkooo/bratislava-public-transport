@@ -41,6 +41,14 @@ const MATCH_REJECT_M = 3000
 const STOP_TO_LINE_WARN_M = 80
 /** Validation: warn if OSM length / GTFS shape length falls outside these bounds. */
 const LENGTH_RATIO_BOUNDS: [number, number] = [0.9, 1.8]
+/** Stops farther than this from the matched polyline trigger geometry repair
+ *  (e.g. GTFS runs a diversion that OSM doesn't have — trams 3/4 "Výluka Centrum"). */
+const REPAIR_THRESHOLD_M = 150
+const OVERPASS_RAILS_QUERY = `
+[out:json][timeout:120];
+way["railway"="tram"](48.0,16.9,48.3,17.3);
+out geom;
+`
 
 const ROUTE_TYPE: Record<string, "tram" | "bus" | "trolleybus"> = {
   "0": "tram",
@@ -264,6 +272,253 @@ async function loadOsmGeometries(): Promise<OsmGeometry[]> {
   return geometries
 }
 
+// ---------- tram rail network (for geometry repair) ----------
+
+async function loadTramRails(): Promise<LonLat[][]> {
+  const cachePath = path.join(DATA_CACHE_DIR, "tram-rails.json")
+  const refresh = process.env.OSM_REFRESH === "1"
+  if (!refresh && fs.existsSync(cachePath)) {
+    return JSON.parse(fs.readFileSync(cachePath, "utf8"))
+  }
+  let raw: { elements: Record<string, unknown>[] } | undefined
+  const rawCachePath = path.join(CACHE_DIR, "tram-rails-raw.json")
+  if (!refresh && fs.existsSync(rawCachePath)) {
+    raw = JSON.parse(fs.readFileSync(rawCachePath, "utf8"))
+  }
+  if (!raw) console.log("Fetching tram rails from Overpass…")
+  for (const endpoint of raw ? [] : OVERPASS_ENDPOINTS) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "data=" + encodeURIComponent(OVERPASS_RAILS_QUERY),
+        signal: AbortSignal.timeout(300_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      raw = (await res.json()) as typeof raw
+      break
+    } catch (e) {
+      console.warn(`  Overpass ${endpoint} failed: ${e}`)
+    }
+  }
+  if (!raw) {
+    if (fs.existsSync(cachePath)) {
+      console.warn("  Overpass unavailable — using committed tram-rails cache")
+      return JSON.parse(fs.readFileSync(cachePath, "utf8"))
+    }
+    console.warn("  No tram rails available — tram repairs fall back to chords")
+    return []
+  }
+  const ways: LonLat[][] = []
+  for (const el of raw.elements) {
+    const geometry = el.geometry as { lat: number; lon: number }[] | undefined
+    if (!geometry || geometry.length < 2) continue
+    ways.push(geometry.map((g) => [r6(g.lon), r6(g.lat)] as LonLat))
+  }
+  fs.mkdirSync(DATA_CACHE_DIR, { recursive: true })
+  fs.writeFileSync(cachePath, JSON.stringify(ways))
+  console.log(`  cached ${ways.length} tram rail ways`)
+  return ways
+}
+
+interface RailGraph {
+  nodes: Map<string, LonLat>
+  adj: Map<string, [string, number][]>
+}
+
+/** ~1.1 m key precision merges near-coincident endpoints into one junction node. */
+const railKey = (p: LonLat) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`
+
+function buildRailGraph(ways: LonLat[][]): RailGraph {
+  const nodes = new Map<string, LonLat>()
+  const adj = new Map<string, [string, number][]>()
+  const link = (a: string, b: string, w: number) => {
+    let arr = adj.get(a)
+    if (!arr) adj.set(a, (arr = []))
+    arr.push([b, w])
+  }
+  for (const way of ways) {
+    for (let i = 1; i < way.length; i++) {
+      const a = way[i - 1]
+      const b = way[i]
+      const ka = railKey(a)
+      const kb = railKey(b)
+      if (ka === kb) continue
+      nodes.set(ka, a)
+      nodes.set(kb, b)
+      const w = haversine(a, b)
+      link(ka, kb, w)
+      link(kb, ka, w)
+    }
+  }
+  return { nodes, adj }
+}
+
+function nearestRailNode(
+  graph: RailGraph,
+  p: LonLat,
+  maxM = 120
+): string | null {
+  let best: string | null = null
+  let bestD = maxM
+  for (const [key, coord] of graph.nodes) {
+    const d = haversine(p, coord)
+    if (d < bestD) {
+      bestD = d
+      best = key
+    }
+  }
+  return best
+}
+
+/** Dijkstra over the rail graph with a small binary heap. */
+function railShortestPath(
+  graph: RailGraph,
+  fromKey: string,
+  toKey: string
+): LonLat[] | null {
+  const dist = new Map<string, number>()
+  const prev = new Map<string, string>()
+  const heap: [number, string][] = [[0, fromKey]]
+  dist.set(fromKey, 0)
+  const push = (item: [number, string]) => {
+    heap.push(item)
+    let i = heap.length - 1
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (heap[parent][0] <= heap[i][0]) break
+      ;[heap[parent], heap[i]] = [heap[i], heap[parent]]
+      i = parent
+    }
+  }
+  const pop = (): [number, string] | undefined => {
+    if (heap.length === 0) return undefined
+    const top = heap[0]
+    const last = heap.pop()!
+    if (heap.length > 0) {
+      heap[0] = last
+      let i = 0
+      for (;;) {
+        const l = 2 * i + 1
+        const r = l + 1
+        let min = i
+        if (l < heap.length && heap[l][0] < heap[min][0]) min = l
+        if (r < heap.length && heap[r][0] < heap[min][0]) min = r
+        if (min === i) break
+        ;[heap[min], heap[i]] = [heap[i], heap[min]]
+        i = min
+      }
+    }
+    return top
+  }
+  while (heap.length > 0) {
+    const [d, key] = pop()!
+    if (key === toKey) break
+    if (d > (dist.get(key) ?? Infinity)) continue
+    for (const [next, w] of graph.adj.get(key) ?? []) {
+      const nd = d + w
+      if (nd < (dist.get(next) ?? Infinity)) {
+        dist.set(next, nd)
+        prev.set(next, key)
+        push([nd, next])
+      }
+    }
+  }
+  if (!dist.has(toKey)) return null
+  const path: LonLat[] = []
+  let cur: string | undefined = toKey
+  while (cur) {
+    path.unshift(graph.nodes.get(cur)!)
+    cur = prev.get(cur)
+  }
+  return path
+}
+
+/** Route consecutive waypoints through the rail network; null if any hop fails. */
+function railPathThrough(
+  graph: RailGraph,
+  waypoints: LonLat[]
+): LonLat[] | null {
+  const out: LonLat[] = []
+  let chordLen = 0
+  for (let i = 1; i < waypoints.length; i++)
+    chordLen += haversine(waypoints[i - 1], waypoints[i])
+  for (let i = 1; i < waypoints.length; i++) {
+    const a = nearestRailNode(graph, waypoints[i - 1])
+    const b = nearestRailNode(graph, waypoints[i])
+    if (!a || !b) return null
+    const seg = railShortestPath(graph, a, b)
+    if (!seg) return null
+    out.push(...(out.length > 0 ? seg.slice(1) : seg))
+  }
+  if (polylineLength(out) > chordLen * 3 + 500) return null // suspicious detour
+  return out
+}
+
+const nearestVertexIdx = (coords: LonLat[], p: LonLat): number => {
+  let best = 0
+  let bestD = Infinity
+  for (let i = 0; i < coords.length; i++) {
+    const d = haversine(p, coords[i])
+    if (d < bestD) {
+      bestD = d
+      best = i
+    }
+  }
+  return best
+}
+
+/**
+ * Splice off-route stops into the polyline: for every run of consecutive stops
+ * farther than REPAIR_THRESHOLD_M, replace the segment between the surrounding
+ * on-route anchors with a path through those stops — via the tram rail network
+ * when available, else straight chords.
+ */
+function repairGeometry(
+  geometry: LonLat[],
+  stopPts: { pt: LonLat; name: string }[],
+  railGraph: RailGraph | null
+): { geometry: LonLat[]; repairedStops: string[]; usedRails: boolean } {
+  const repairedStops: string[] = []
+  let usedRails = false
+  for (let iter = 0; iter < 6; iter++) {
+    const dists = stopPts.map((s) => pointToPolylineM(s.pt, geometry))
+    const start = dists.findIndex((d) => d > REPAIR_THRESHOLD_M)
+    if (start === -1) break
+    let end = start
+    while (end + 1 < stopPts.length && dists[end + 1] > REPAIR_THRESHOLD_M)
+      end++
+
+    const anchorA = start - 1 >= 0 ? stopPts[start - 1].pt : geometry[0]
+    const anchorB =
+      end + 1 < stopPts.length
+        ? stopPts[end + 1].pt
+        : geometry[geometry.length - 1]
+    const iA = nearestVertexIdx(geometry, anchorA)
+    const iB = nearestVertexIdx(geometry, anchorB)
+    if (iA >= iB) break // can't splice safely (looped/reversed) — leave as is
+
+    const run = stopPts.slice(start, end + 1)
+    const waypoints: LonLat[] = [
+      geometry[iA],
+      ...run.map((s) => s.pt),
+      geometry[iB],
+    ]
+    let insert: LonLat[] | null = null
+    if (railGraph) {
+      insert = railPathThrough(railGraph, waypoints)
+      if (insert) usedRails = true
+    }
+    if (!insert) insert = waypoints
+    geometry = [...geometry.slice(0, iA), ...insert, ...geometry.slice(iB + 1)]
+    repairedStops.push(...run.map((s) => s.name))
+  }
+  return { geometry, repairedStops, usedRails }
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -423,8 +678,12 @@ async function main() {
     arr.push(g)
   }
 
+  const tramRails = await loadTramRails()
+  const railGraph = tramRails.length > 0 ? buildRailGraph(tramRails) : null
+
   let osmMatched = 0
   let gtfsFallback = 0
+  let repaired = 0
 
   for (const [key, tripIds] of tripsByRouteDir) {
     const [routeId, dirStr] = key.split("|")
@@ -469,14 +728,38 @@ async function main() {
       osmByKey.get(`bus|${line.name}`) ??
       []
 
+    // Among candidates whose termini roughly match, pick the one whose polyline
+    // passes closest to the actual stops (mean distance) — termini alone can't
+    // distinguish normal vs diversion variants that share endpoints.
+    const modalStopPts = modalStops
+      .map((sid) => stops.get(sid))
+      .filter((s): s is NonNullable<typeof s> => !!s)
+      .map((s) => ({ pt: [s.lon, s.lat] as LonLat, name: s.name }))
+    const shapeLen = polylineLength(
+      shapes.get(trips.get(modal.tripId)!.shapeId) ?? []
+    )
     let bestGeom: OsmGeometry | undefined
     let bestScore = Infinity
+    let bestMean = Infinity
     for (const g of candidates) {
-      const score =
+      const terminiScore =
         haversine(firstPt, g.coords[0]) +
         haversine(lastPt, g.coords[g.coords.length - 1])
-      if (score < bestScore) {
-        bestScore = score
+      if (terminiScore >= MATCH_REJECT_M) continue
+      // A round-trip/variant relation passes near every stop too — reject by
+      // length before comparing stop proximity.
+      if (shapeLen > 0) {
+        const lenRatio = polylineLength(g.coords) / shapeLen
+        if (lenRatio > 2 || lenRatio < 0.6) continue
+      }
+      const mean =
+        modalStopPts.reduce(
+          (sum, s) => sum + pointToPolylineM(s.pt, g.coords),
+          0
+        ) / Math.max(1, modalStopPts.length)
+      if (mean < bestMean) {
+        bestMean = mean
+        bestScore = terminiScore
         bestGeom = g
       }
     }
@@ -528,7 +811,21 @@ async function main() {
             `line ${line.name} dir ${dirStr}: OSM/GTFS length ratio ${ratio.toFixed(2)}`
           )
         }
-        if (worst > STOP_TO_LINE_WARN_M) {
+        if (worst > REPAIR_THRESHOLD_M) {
+          // GTFS runs where OSM doesn't (diversion) — splice those stops in
+          const repair = repairGeometry(
+            geometry,
+            modalStopPts,
+            line.type === "tram" ? railGraph : null
+          )
+          geometry = repair.geometry.map(([x, y]) => [r6(x), r6(y)] as LonLat)
+          repaired++
+          warn(
+            `line ${line.name} dir ${dirStr}: repaired geometry through ` +
+              `${[...new Set(repair.repairedStops)].join(", ")} ` +
+              `(${repair.usedRails ? "via tram tracks" : "straight splice"})`
+          )
+        } else if (worst > STOP_TO_LINE_WARN_M) {
           warn(
             `line ${line.name} dir ${dirStr}: stop up to ${Math.round(worst)} m from polyline`
           )
@@ -850,7 +1147,9 @@ async function main() {
   )
   console.log("\n== summary ==")
   console.log(`lines: ${allLines.length}, directions: ${dirCount}`)
-  console.log(`geometry: ${osmMatched} OSM, ${gtfsFallback} GTFS fallback`)
+  console.log(
+    `geometry: ${osmMatched} OSM (${repaired} repaired), ${gtfsFallback} GTFS fallback`
+  )
   console.log(`stops with service: ${stopIndex.length} of ${stops.size}`)
   console.log(`warnings: ${warnings.length}`)
   if (warnings.length) {
