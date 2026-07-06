@@ -1,5 +1,52 @@
 {
+  "name": "bratislava-public-transport",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:data": "tsx scripts/build-data.ts",
+    "lint": "eslint .",
+    "format": "prettier --write \"**/*.{ts,tsx}\"",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.6.0",
+    "@fontsource-variable/geist": "^5.2.9",
+    "@tailwindcss/vite": "^4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.23.0",
+    "maplibre-gl": "^5.24.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "shadcn": "^4.13.0",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4",
+    "tw-animate-css": "^1.4.0",
+    "zustand": "^5.0.14"
+  },
   "devDependencies": {
-    "shadcn": "^4.13.0"
+    "@eslint/js": "^10",
+    "@types/adm-zip": "^0.5.8",
+    "@types/geojson": "^7946.0.16",
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6",
+    "adm-zip": "^0.5.18",
+    "csv-parse": "^7.0.1",
+    "eslint": "^10",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17",
+    "prettier": "^3.8.3",
+    "prettier-plugin-tailwindcss": "^0.8.0",
+    "tsx": "^4.23.0",
+    "typescript": "~6",
+    "typescript-eslint": "^8",
+    "vite": "^8"
   }
 }
