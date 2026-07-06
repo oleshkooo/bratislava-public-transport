@@ -66,7 +66,7 @@ when opened. Keeps initial load light and the whole thing static/cacheable.
 
 ## 3. Tech stack
 
-- **Frontend:** React + Vite + TypeScript.
+- **Frontend:** React + Vite + TypeScript + Shadcn UI.
 - **Map:** MapLibre GL JS (WebGL, handles thousands of features). Tiles: **OpenFreeMap**
   (free vector tiles, no API key). Fallback: MapTiler free tier.
 - **State:** lightweight (Zustand) + **URL as source of truth** (selected line/stop/view →
@@ -129,11 +129,11 @@ when opened. Keeps initial load light and the whole thing static/cacheable.
 - **M6 — Search:** lines + stops.
 - **M7 — Personal:** favorites, near-me, URL state, dark mode.
 - **M8 — PWA + polish + deploy:** offline, weekly data-refresh Action, attribution.
+- **M9 — Trip planner:** A→B routing (RAPTOR/CSA over the schedule; likely `sql.js`/WASM).
 
 **Later phases**
-- **P3 — Real-time:** vehicle positions + live delays (needs a live source; thin proxy).
-- **P4 — Coverage:** merge regional buses + trains (S-lines).
-- **P5 — Trip planner:** A→B routing (RAPTOR/CSA over the schedule; likely `sql.js`/WASM).
+- **P1 — Real-time:** vehicle positions + live delays (needs a live source; thin proxy).
+- **P2 — Coverage:** merge regional buses + trains (S-lines).
 
 ---
 
