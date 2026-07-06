@@ -1,4 +1,5 @@
 import { create } from "zustand"
+import type { Feature } from "geojson"
 import {
   loadCalendar,
   loadLineDetail,
@@ -18,6 +19,13 @@ export type View =
   | { kind: "browse" }
   | { kind: "line"; lineId: string; dir: number }
   | { kind: "stop"; stopId: string }
+  | { kind: "plan" }
+
+export interface ItineraryOverlay {
+  transit: Feature[]
+  walk: Feature[]
+  coords: [number, number][]
+}
 
 interface AppState {
   booted: boolean
@@ -46,12 +54,16 @@ interface AppState {
 
   favorites: { lines: string[]; stops: string[] }
   recents: { lines: string[]; stops: string[] }
+  /** selected trip-planner itinerary drawn on the map */
+  itineraryOverlay: ItineraryOverlay | null
 
   boot: () => Promise<void>
   selectLine: (lineId: string, dir?: number) => void
   setDirection: (dir: number) => void
   selectStop: (stopId: string) => void
   openTimetable: (lineId: string, dir: number, stopId: string) => void
+  goPlan: () => void
+  setItineraryOverlay: (o: ItineraryOverlay | null) => void
   goBrowse: () => void
   closeStop: () => void
   setTypeTab: (tab: TypeTab) => void
@@ -89,7 +101,9 @@ function writeHash(view: View) {
       ? `#line=${encodeURIComponent(view.lineId)}&dir=${view.dir}`
       : view.kind === "stop"
         ? `#stop=${encodeURIComponent(view.stopId)}`
-        : ""
+        : view.kind === "plan"
+          ? "#plan"
+          : ""
   history.replaceState(null, "", hash || location.pathname + location.search)
 }
 
@@ -100,6 +114,7 @@ function parseHash(): View {
     return { kind: "line", lineId: line, dir: Number(params.get("dir")) || 0 }
   const stop = params.get("stop")
   if (stop) return { kind: "stop", stopId: stop }
+  if (params.has("plan")) return { kind: "plan" }
   return { kind: "browse" }
 }
 
@@ -119,6 +134,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showStops: true,
   focusStop: null,
   stopPanelInit: null,
+  itineraryOverlay: null,
 
   favorites: loadPersisted("favorites", { lines: [], stops: [] }),
   recents: loadPersisted("recents", { lines: [], stops: [] }),
@@ -136,6 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const initial = parseHash()
       if (initial.kind === "line") get().selectLine(initial.lineId, initial.dir)
       else if (initial.kind === "stop") get().selectStop(initial.stopId)
+      else if (initial.kind === "plan") get().goPlan()
     } catch (e) {
       set({ bootError: String(e) })
     }
@@ -210,6 +227,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ stopPanelInit: { stopId, tab: "timetable", line: lineId, dir } })
   },
 
+  goPlan: () => {
+    const view: View = { kind: "plan" }
+    set({ view, prevView: null, lineDetail: null })
+    writeHash(view)
+  },
+
+  setItineraryOverlay: (itineraryOverlay) => set({ itineraryOverlay }),
+
   closeStop: () => {
     const prev = get().prevView
     if (prev && prev.kind === "line") {
@@ -251,3 +276,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ favorites })
   },
 }))
+
+if (import.meta.env.DEV) {
+  // handy for debugging from the browser console
+  ;(window as unknown as Record<string, unknown>).__appStore = useAppStore
+}

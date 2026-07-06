@@ -224,10 +224,14 @@ async function loadOsmGeometries(): Promise<OsmGeometry[]> {
   }
   if (!raw) {
     if (fs.existsSync(cachePath)) {
-      console.warn("  Overpass unavailable — falling back to committed geometry cache")
+      console.warn(
+        "  Overpass unavailable — falling back to committed geometry cache"
+      )
       return JSON.parse(fs.readFileSync(cachePath, "utf8"))
     }
-    throw new Error("All Overpass endpoints failed and no cached geometries exist")
+    throw new Error(
+      "All Overpass endpoints failed and no cached geometries exist"
+    )
   }
 
   const geometries: OsmGeometry[] = []
@@ -573,6 +577,119 @@ async function main() {
   }
   for (const arr of stopDepartures.values()) arr.sort((a, b) => a.t - b.t)
 
+  // --- planner dataset (RAPTOR over full timetable) ---
+  console.log("Building planner dataset…")
+  const stopIdxById = new Map<string, number>()
+  const stopIdList: string[] = []
+  const stopIdx = (id: string) => {
+    let i = stopIdxById.get(id)
+    if (i === undefined) {
+      i = stopIdList.length
+      stopIdxById.set(id, i)
+      stopIdList.push(id)
+    }
+    return i
+  }
+  const serviceIdxById = new Map<string, number>()
+  const serviceIdList: string[] = []
+  const serviceIdx = (id: string) => {
+    let i = serviceIdxById.get(id)
+    if (i === undefined) {
+      i = serviceIdList.length
+      serviceIdxById.set(id, i)
+      serviceIdList.push(id)
+    }
+    return i
+  }
+
+  interface PlannerPattern {
+    line: string
+    dir: number
+    stops: number[]
+    /** each trip: [serviceIdx, headsignIdx, t0, t1, …] departure seconds per stop */
+    trips: number[][]
+  }
+  const patternByKey = new Map<string, PlannerPattern>()
+  const headsigns: string[] = []
+  const headsignIdxByText = new Map<string, number>()
+  const headsignIdx = (h: string) => {
+    let i = headsignIdxByText.get(h)
+    if (i === undefined) {
+      i = headsigns.length
+      headsignIdxByText.set(h, i)
+      headsigns.push(h)
+    }
+    return i
+  }
+
+  for (const [tripId, seq] of tripStops) {
+    const t = trips.get(tripId)
+    if (!t) continue
+    const line = linesByRouteId.get(t.routeId)
+    if (!line || seq.length < 2) continue
+    const sig = seq.map((s) => s.stopId).join("|")
+    const key = `${t.routeId}|${t.directionId}|${sig}`
+    let pattern = patternByKey.get(key)
+    if (!pattern) {
+      pattern = {
+        line: line.name,
+        dir: t.directionId,
+        stops: seq.map((s) => stopIdx(s.stopId)),
+        trips: [],
+      }
+      patternByKey.set(key, pattern)
+    }
+    pattern.trips.push([
+      serviceIdx(t.serviceId),
+      headsignIdx(t.headsign),
+      ...seq.map((s) => s.dep),
+    ])
+  }
+  for (const p of patternByKey.values()) {
+    p.trips.sort((a, b) => a[2] - b[2])
+  }
+
+  // Footpath transfers between platforms within walking distance.
+  // Grid hash keeps the pairwise scan local.
+  const WALK_RADIUS_M = 250
+  const WALK_SPEED = 1.3 // m/s
+  const MAX_TRANSFERS_PER_STOP = 8
+  const servedStops = [...stopDepartures.keys()]
+    .map((id) => stops.get(id))
+    .filter((s): s is NonNullable<typeof s> => !!s)
+  const cell = (lon: number, lat: number) =>
+    `${Math.floor(lon / 0.003)}|${Math.floor(lat / 0.003)}`
+  const grid = new Map<string, typeof servedStops>()
+  for (const s of servedStops) {
+    const key = cell(s.lon, s.lat)
+    let arr = grid.get(key)
+    if (!arr) grid.set(key, (arr = []))
+    arr.push(s)
+  }
+  const transfers: [number, number, number][] = []
+  for (const s of servedStops) {
+    const candidates: { idx: number; sec: number }[] = []
+    const cx = Math.floor(s.lon / 0.003)
+    const cy = Math.floor(s.lat / 0.003)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (const o of grid.get(`${cx + dx}|${cy + dy}`) ?? []) {
+          if (o.id === s.id) continue
+          const d = haversine([s.lon, s.lat], [o.lon, o.lat])
+          if (d <= WALK_RADIUS_M) {
+            // Same-name platforms are the same physical stop: minimal penalty
+            const sec = o.name === s.name ? 45 : Math.round(d / WALK_SPEED) + 30
+            candidates.push({ idx: stopIdx(o.id), sec })
+          }
+        }
+      }
+    }
+    candidates.sort((a, b) => a.sec - b.sec)
+    for (const c of candidates.slice(0, MAX_TRANSFERS_PER_STOP)) {
+      transfers.push([stopIdx(s.id), c.idx, c.sec])
+    }
+  }
+
   // --- emit ---
   console.log("Writing public/data…")
   fs.rmSync(OUT_DIR, { recursive: true, force: true })
@@ -713,6 +830,18 @@ async function main() {
       JSON.stringify({ id: s.id, name: s.name, code: s.code, departures: deps })
     )
   }
+
+  // planner.json — compact timetable for client-side RAPTOR
+  fs.writeFileSync(
+    path.join(OUT_DIR, "planner.json"),
+    JSON.stringify({
+      stops: stopIdList,
+      services: serviceIdList,
+      headsigns,
+      patterns: [...patternByKey.values()],
+      transfers,
+    })
+  )
 
   // --- summary ---
   const dirCount = [...lineDirections.values()].reduce(

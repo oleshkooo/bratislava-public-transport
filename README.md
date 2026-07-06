@@ -1,8 +1,11 @@
 # Bratislava Transit Map
 
+**Live: <https://oleshkooo.github.io/bratislava-public-transport/>**
+
 A fast, clean web map of Bratislava public transport (MHD): all tram, trolleybus and bus
-routes with precise street-following geometry, stops, and schedule-aware departure boards.
-Fully static — no backend. See [docs/PLAN.md](docs/PLAN.md) for the full plan.
+routes with precise street-following geometry, stops, schedule-aware departure boards,
+printed-style timetables, favorites, dark mode, offline PWA and a client-side A→B trip
+planner (RAPTOR). Fully static — no backend. See [docs/PLAN.md](docs/PLAN.md) for the plan.
 
 ## Quick start
 

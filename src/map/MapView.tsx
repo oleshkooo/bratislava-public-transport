@@ -114,7 +114,7 @@ function addTransitLayers(map: MlMap, dark: boolean) {
     },
   })
 
-  // Walking legs of a planned trip (dashed), under transit legs
+  // Trip-planner itinerary: dashed walking legs under colored transit legs
   map.addSource("itinerary-walk", { type: "geojson", data: EMPTY_FC })
   map.addLayer({
     id: "itinerary-walk-line",
@@ -125,6 +125,37 @@ function addTransitLayers(map: MlMap, dark: boolean) {
       "line-color": dark ? "#94a3b8" : "#64748b",
       "line-width": 3,
       "line-dasharray": [1, 1.5],
+    },
+  })
+  map.addSource("itinerary-transit", { type: "geojson", data: EMPTY_FC })
+  map.addLayer({
+    id: "itinerary-transit-casing",
+    type: "line",
+    source: "itinerary-transit",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": p.casing,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 14, 9, 16, 13],
+    },
+  })
+  map.addLayer({
+    id: "itinerary-transit-line",
+    type: "line",
+    source: "itinerary-transit",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        10,
+        3,
+        14,
+        5.5,
+        16,
+        8,
+      ],
     },
   })
 
@@ -289,6 +320,7 @@ export function MapView() {
   const showRoutes = useAppStore((s) => s.showRoutes)
   const showStops = useAppStore((s) => s.showStops)
   const focusStop = useAppStore((s) => s.focusStop)
+  const itineraryOverlay = useAppStore((s) => s.itineraryOverlay)
 
   const dark = useResolvedDark()
   const darkRef = useRef(dark)
@@ -488,6 +520,41 @@ export function MapView() {
       })
     }
   }, [epoch, view, lineDetail, stopsById])
+
+  // --- trip-planner itinerary overlay ---
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || epoch === 0) return
+    const tSrc = map.getSource("itinerary-transit") as GeoJSONSource | undefined
+    const wSrc = map.getSource("itinerary-walk") as GeoJSONSource | undefined
+    if (view.kind !== "plan" || !itineraryOverlay) {
+      tSrc?.setData(EMPTY_FC)
+      wSrc?.setData(EMPTY_FC)
+      return
+    }
+    tSrc?.setData({
+      type: "FeatureCollection",
+      features: itineraryOverlay.transit,
+    })
+    wSrc?.setData({
+      type: "FeatureCollection",
+      features: itineraryOverlay.walk,
+    })
+    if (itineraryOverlay.coords.length > 1) {
+      const bounds = itineraryOverlay.coords.reduce(
+        (b, c) => b.extend(c),
+        new maplibregl.LngLatBounds(
+          itineraryOverlay.coords[0],
+          itineraryOverlay.coords[0]
+        )
+      )
+      map.fitBounds(bounds, {
+        padding: fitPadding(),
+        duration: 600,
+        maxZoom: 15,
+      })
+    }
+  }, [epoch, view.kind, itineraryOverlay])
 
   // --- selected stop highlight ---
   useEffect(() => {
