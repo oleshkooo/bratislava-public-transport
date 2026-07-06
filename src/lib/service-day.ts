@@ -39,14 +39,29 @@ export function bratislavaNow(date = new Date()): LocalNow {
   }
 }
 
-export function previousDateKey(dateKey: string): string {
+export function addDaysToDateKey(dateKey: string, days: number): string {
   const y = Number(dateKey.slice(0, 4))
   const m = Number(dateKey.slice(4, 6))
   const d = Number(dateKey.slice(6, 8))
-  const prev = new Date(Date.UTC(y, m - 1, d, 12) - 24 * 3600 * 1000)
-  const mm = String(prev.getUTCMonth() + 1).padStart(2, "0")
-  const dd = String(prev.getUTCDate()).padStart(2, "0")
-  return `${prev.getUTCFullYear()}${mm}${dd}`
+  const t = new Date(Date.UTC(y, m - 1, d, 12) + days * 24 * 3600 * 1000)
+  const mm = String(t.getUTCMonth() + 1).padStart(2, "0")
+  const dd = String(t.getUTCDate()).padStart(2, "0")
+  return `${t.getUTCFullYear()}${mm}${dd}`
+}
+
+export const previousDateKey = (dateKey: string) =>
+  addDaysToDateKey(dateKey, -1)
+
+const WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+/** Short weekday label ("Mon") for a YYYYMMDD key. */
+export function weekdayLabel(dateKey: string): string {
+  const y = Number(dateKey.slice(0, 4))
+  const m = Number(dateKey.slice(4, 6))
+  const d = Number(dateKey.slice(6, 8))
+  return WEEKDAY_SHORT[
+    (new Date(Date.UTC(y, m - 1, d, 12)).getUTCDay() + 6) % 7
+  ]
 }
 
 /** Monday = 0 … Sunday = 6, matching GTFS calendar column order. */

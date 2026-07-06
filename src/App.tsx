@@ -1,7 +1,10 @@
 import { useEffect } from "react"
-import { CircleDot, Route } from "lucide-react"
+import { CircleDot, Moon, Route, Sun } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { Toggle } from "@/components/ui/toggle"
+import { useTheme } from "@/components/theme-provider"
+import { useResolvedDark } from "@/lib/use-resolved-dark"
 import { MapView } from "@/map/MapView"
 import { LinesMenu } from "@/features/lines/LinesMenu"
 import { LinePanel } from "@/features/lines/LinePanel"
@@ -18,6 +21,8 @@ export default function App() {
   const setShowRoutes = useAppStore((s) => s.setShowRoutes)
   const setShowStops = useAppStore((s) => s.setShowStops)
   const boot = useAppStore((s) => s.boot)
+  const { setTheme } = useTheme()
+  const dark = useResolvedDark()
 
   useEffect(() => {
     void boot()
@@ -55,6 +60,16 @@ export default function App() {
               >
                 <CircleDot />
               </Toggle>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={
+                  dark ? "Switch to light mode" : "Switch to dark mode"
+                }
+                onClick={() => setTheme(dark ? "light" : "dark")}
+              >
+                {dark ? <Sun /> : <Moon />}
+              </Button>
             </div>
           </div>
           <SearchBox />

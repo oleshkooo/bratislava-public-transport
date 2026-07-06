@@ -2,6 +2,7 @@ import { BusFront, MoonStar, TramFront, Zap } from "lucide-react"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { useAppStore, type TypeTab } from "@/state/store"
+import { PersonalSection } from "@/features/personal/PersonalSection"
 import { LineChip } from "./LineChip"
 
 const TABS: { value: TypeTab; label: string; icon: typeof TramFront }[] = [
@@ -25,6 +26,7 @@ export function LinesMenu() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pt-2">
+      <PersonalSection />
       <Tabs value={typeTab} onValueChange={(v) => setTypeTab(v as TypeTab)}>
         <TabsList className="w-full">
           {TABS.map((t) => (

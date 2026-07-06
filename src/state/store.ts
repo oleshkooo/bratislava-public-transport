@@ -36,17 +36,51 @@ interface AppState {
   showStops: boolean
   /** one-shot map focus request from list clicks; ts forces re-trigger for same stop */
   focusStop: { id: string; ts: number } | null
+  /** consumed by StopPanel to open a specific tab / line filter */
+  stopPanelInit: {
+    stopId: string
+    tab: "timetable"
+    line: string
+    dir: number
+  } | null
+
+  favorites: { lines: string[]; stops: string[] }
+  recents: { lines: string[]; stops: string[] }
 
   boot: () => Promise<void>
   selectLine: (lineId: string, dir?: number) => void
   setDirection: (dir: number) => void
   selectStop: (stopId: string) => void
+  openTimetable: (lineId: string, dir: number, stopId: string) => void
   goBrowse: () => void
   closeStop: () => void
   setTypeTab: (tab: TypeTab) => void
   setShowRoutes: (v: boolean) => void
   setShowStops: (v: boolean) => void
   focusStopOnMap: (id: string) => void
+  toggleFavoriteLine: (id: string) => void
+  toggleFavoriteStop: (id: string) => void
+}
+
+function loadPersisted<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function savePersisted(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // storage full/blocked — favorites just won't persist
+  }
+}
+
+function pushRecent(list: string[], id: string, max = 8): string[] {
+  return [id, ...list.filter((x) => x !== id)].slice(0, max)
 }
 
 function writeHash(view: View) {
@@ -84,6 +118,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   showRoutes: true,
   showStops: true,
   focusStop: null,
+  stopPanelInit: null,
+
+  favorites: loadPersisted("favorites", { lines: [], stops: [] }),
+  recents: loadPersisted("recents", { lines: [], stops: [] }),
 
   boot: async () => {
     try {
@@ -107,11 +145,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     const line = get().routesIndex?.lines.find((l) => l.id === lineId)
     if (!line) return
     const view: View = { kind: "line", lineId, dir }
+    const recents = {
+      ...get().recents,
+      lines: pushRecent(get().recents.lines, lineId),
+    }
+    savePersisted("recents", recents)
     set({
       view,
       prevView: null,
       lineDetail: null,
       typeTab: line.night ? "night" : line.type,
+      recents,
     })
     writeHash(view)
     loadLineDetail(lineId).then((detail) => {
@@ -147,8 +191,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectStop: (stopId) => {
     const cur = get().view
     const view: View = { kind: "stop", stopId }
-    set({ view, prevView: cur.kind === "stop" ? get().prevView : cur })
+    const recents = {
+      ...get().recents,
+      stops: pushRecent(get().recents.stops, stopId),
+    }
+    savePersisted("recents", recents)
+    set({
+      view,
+      prevView: cur.kind === "stop" ? get().prevView : cur,
+      stopPanelInit: null,
+      recents,
+    })
     writeHash(view)
+  },
+
+  openTimetable: (lineId, dir, stopId) => {
+    get().selectStop(stopId)
+    set({ stopPanelInit: { stopId, tab: "timetable", line: lineId, dir } })
   },
 
   closeStop: () => {
@@ -171,4 +230,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowRoutes: (showRoutes) => set({ showRoutes }),
   setShowStops: (showStops) => set({ showStops }),
   focusStopOnMap: (id) => set({ focusStop: { id, ts: Date.now() } }),
+
+  toggleFavoriteLine: (id) => {
+    const f = get().favorites
+    const lines = f.lines.includes(id)
+      ? f.lines.filter((x) => x !== id)
+      : [...f.lines, id]
+    const favorites = { ...f, lines }
+    savePersisted("favorites", favorites)
+    set({ favorites })
+  },
+
+  toggleFavoriteStop: (id) => {
+    const f = get().favorites
+    const stops = f.stops.includes(id)
+      ? f.stops.filter((x) => x !== id)
+      : [...f.stops, id]
+    const favorites = { ...f, stops }
+    savePersisted("favorites", favorites)
+    set({ favorites })
+  },
 }))

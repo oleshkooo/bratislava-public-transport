@@ -1,9 +1,10 @@
-import { ArrowLeft, Clock } from "lucide-react"
+import { ArrowLeft, CalendarClock, Clock, Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useAppStore } from "@/state/store"
+import { cn } from "@/lib/utils"
 import { LineChip } from "./LineChip"
 
 const TYPE_LABEL = {
@@ -21,6 +22,9 @@ export function LinePanel() {
   const setDirection = useAppStore((s) => s.setDirection)
   const selectStop = useAppStore((s) => s.selectStop)
   const focusStopOnMap = useAppStore((s) => s.focusStopOnMap)
+  const openTimetable = useAppStore((s) => s.openTimetable)
+  const favorites = useAppStore((s) => s.favorites)
+  const toggleFavoriteLine = useAppStore((s) => s.toggleFavoriteLine)
 
   if (view.kind !== "line") return null
   const meta = routesIndex?.lines.find((l) => l.id === view.lineId)
@@ -47,7 +51,7 @@ export function LinePanel() {
           textColor={meta.textColor}
           className="h-9 px-2 text-base"
         />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold">
             {meta.night ? "Night bus" : TYPE_LABEL[meta.type]}
           </div>
@@ -60,6 +64,23 @@ export function LinePanel() {
             </div>
           )}
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={
+            favorites.lines.includes(meta.id)
+              ? "Remove from favorites"
+              : "Add to favorites"
+          }
+          onClick={() => toggleFavoriteLine(meta.id)}
+        >
+          <Star
+            className={cn(
+              favorites.lines.includes(meta.id) &&
+                "fill-amber-400 text-amber-400"
+            )}
+          />
+        </Button>
       </div>
 
       {!lineDetail || !dir ? (
@@ -92,6 +113,16 @@ export function LinePanel() {
               ))}
             </ToggleGroup>
           )}
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => openTimetable(meta.id, dir.id, dir.stops[0])}
+          >
+            <CalendarClock data-icon="inline-start" />
+            Timetable from {stopsById.get(dir.stops[0])?.name ?? "terminus"}
+          </Button>
 
           <ScrollArea className="min-h-0 flex-1">
             <div className="relative pr-2 pl-1">
