@@ -314,7 +314,13 @@ export function PlannerPanel() {
         })
       }
     }
-    itineraries.sort((x, y) => x.arrive - y.arrive || x.transfers - y.transfers)
+    // Shortest trip first; earlier arrival breaks ties
+    itineraries.sort(
+      (x, y) =>
+        x.arrive - x.depart - (y.arrive - y.depart) ||
+        x.arrive - y.arrive ||
+        x.transfers - y.transfers
+    )
     const top = itineraries.slice(0, 5)
     setResults(top)
     setSelected(null)
