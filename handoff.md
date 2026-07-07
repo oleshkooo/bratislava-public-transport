@@ -1,19 +1,24 @@
 # Handoff — Bratislava Transit Map
 
-Last updated: 2026-07-07. State: **all plan milestones M0–M9 shipped and deployed.**
+Last updated: 2026-07-07 (second iteration). State: **all plan milestones M0–M9 shipped
+and deployed**, plus a post-plan round: location→location planner with routed walking
+legs, share links, schedule-interpolated vehicle positions, overview dimming, bundle
+split. Backlog lives in [TODO.md](TODO.md).
 Live: <https://oleshkooo.github.io/bratislava-public-transport/> · Plan: [docs/PLAN.md](docs/PLAN.md)
 
 ## What this is
 
 Static web map of Bratislava MHD: all 91 lines (tram/trolleybus/bus/night) with
 street-following geometry, 1 355 stops, live schedule-aware departure boards, printed-style
-timetables, search, favorites/recents/near-me, dark mode, installable offline PWA, and a
-client-side A→B trip planner (RAPTOR). No backend; UI in English, transit names in Slovak.
+timetables, search, favorites/recents/near-me, dark mode, installable offline PWA, a
+client-side **location→location trip planner** (RAPTOR + walking legs routed over an OSM
+footway graph, shareable trip links), and **scheduled vehicle positions** animated on the
+map. No backend; UI in English, transit names in Slovak.
 
 ## Daily commands
 
 ```bash
-npm run build:data   # GTFS + OSM caches → public/data/ (~46 MB, gitignored)
+npm run build:data   # GTFS + OSM caches → public/data/ (~55 MB, gitignored)
 npm run dev          # vite dev server (preview config in .claude/launch.json, port 5173)
 npm run build        # tsc -b && vite build (+ PWA)
 npm run lint && npm run typecheck && npm run format
@@ -31,7 +36,7 @@ gitignored). Pages was enabled via `gh api repos/…/pages -f build_type=workflo
 lazy-loadable JSON under `public/data/`; the React app (Vite 8, TS, Tailwind v4,
 shadcn **base-nova** on **@base-ui/react** — not radix, MapLibre GL, Zustand, vaul)
 fetches those files on demand. URL hash is the source of truth for navigation
-(`#line=9&dir=0`, `#stop=<id>`, `#plan`).
+(`#line=9&dir=0`, `#stop=<id>`, `#plan&from=s:<stop>|p:<lat,lon>&to=…&at=HH:MM`).
 
 ### Data pipeline outputs (`public/data/`)
 
@@ -94,7 +99,10 @@ fetches those files on demand. URL hash is the source of truth for navigation
    themselves and are real.
 
 **Overpass quirks**: overpass-api.de sometimes returns 406/HTML — set a UA, retry, or use
-mirrors (kumi.systems, private.coffee); all three are in `OVERPASS_ENDPOINTS`.
+mirrors (kumi.systems, private.coffee); all three are in `OVERPASS_ENDPOINTS`. The
+walkable-ways query is the heavy one (~47 MB response, 600 s timeout) — it only runs on
+`OSM_REFRESH=1` or when both caches are missing; day-to-day builds read the committed
+`data-cache/walk-graph.json`.
 
 **Map/frontend gotchas**:
 - `maplibre-gl.css` forces `position: relative` on the map container → the container must
@@ -118,7 +126,9 @@ mirrors (kumi.systems, private.coffee); all three are in `OVERPASS_ENDPOINTS`.
   `onPressedChange`; nested `<button>` is a real hazard — `LineChip` renders a `<span>`
   when it has no `onClick` specifically so chips can live inside clickable cards.
 - eslint runs react-hooks v7: no sync `setState` in effects — use the
-  "adjust state during render" pattern (see `StopPanel`, `PlannerPanel`, `MobileDrawer`);
+  "adjust state during render" pattern (see `StopPanel`) or an editing-flag
+  (`PlaceField` in PlannerPanel); it also rejects *forward references* from
+  effects to functions declared later in the component (declare first, then use);
   `react-refresh/only-export-components` is off for `src/components/ui/**`.
 - **Vehicle positions** (header BusFront toggle) are schedule-interpolated, not live:
   every active trip is placed along its direction geometry between the two stops it is
@@ -163,16 +173,21 @@ duration.
 
 ## Known rough edges / next steps
 
+The prioritized backlog is [TODO.md](TODO.md). Standing constraints:
+
 - **P1 real-time** and **P2 regional coverage** (plan §5 "later phases") are blocked on
-  external sources — no public GTFS-RT/vehicle feed existed as of 2026-07.
-- JS bundle is ~1.3 MB (maplibre) — code-splitting would help first load.
+  external sources — no public GTFS-RT/vehicle feed existed as of 2026-07 (the vehicle
+  toggle is schedule-interpolated, not live).
+- Walking *times* are a model (straight-line × 1.25 ÷ 1.3 m/s) even though walking
+  *paths* are routed — routing times too would mean running A* per candidate stop
+  inside the RAPTOR query (~dozens of searches per plan) or precomputing tables.
 - `stops/` is 43 MB on disk (fine for Pages; could be compacted with legend arrays).
 - `recents.stops` is tracked in the store but PersonalSection currently shows only recent lines.
-- ~~Line 79 dir 1 length-ratio warning~~ — resolved: the OSM relation ran 3.2 km past the
-  GTFS terminus; the trim step (enrichment §3) now cuts such tails on all lines.
 - Timetable day selector covers 7 days ahead; feed itself is valid to 2026-12-31.
 - PWA icons are generated from `public/favicon.svg` (rasterized via macOS `qlmanage`/`sips`
   — regenerate manually if the icon changes; CI does not rebuild them).
+- Dropped pins have no reverse geocoding (labels are raw coordinates) — an external
+  geocoder would break the fully-static/offline design; accepted for now.
 
 ## Verification playbook
 
@@ -181,9 +196,13 @@ direction toggle → stop timeline → clock icon → departures board (compare 
 Europe/Bratislava wall clock, including after-midnight night lines); search "zochova"
 (diacritic-folded); `#line=4&dir=0` deep link; timetable tab day switching; planner
 Kútiky → Zlaté piesky at night (expects N-lines via Hlavná stanica) and ~10:00 daytime
-(expects tram 9 + 4 vs direct 4 pareto pair); planner with two map-picked points
-(expects access/egress walk legs + endpoint markers, walk-only option for nearby points);
-tram 4 stops Poštová/Vysoká/Blumentál/Centrum must sit on the drawn line **with no
+(expects tram 9 + 4 vs direct 4 pareto pair, sorted by trip duration); planner with two
+map-picked points (expects access/egress walk legs **routed along streets**, endpoint
+markers, dimmed overview while the itinerary is drawn, walk-only option for nearby
+points); share link round-trip: with a trip set, copy the URL, open it in a fresh tab —
+it must restore both places + time and auto-search; vehicles toggle (BusFront in the
+header) shows a few hundred colored dots moving along their lines at daytime; tram 4
+stops Poštová/Vysoká/Blumentál/Centrum must sit on the drawn line **with no
 there-and-back hairpin near Poštová** (regression checks for the repair step); mobile
 drawer: drag works only on the handle (lists scroll without collapsing it), handle tap
 cycles peek→half→full, opening content pulls a peeking drawer to half.
