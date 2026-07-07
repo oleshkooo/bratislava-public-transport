@@ -38,7 +38,11 @@ export function LinesMenu() {
         </TabsList>
       </Tabs>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="grid grid-cols-5 gap-1.5 pr-2">
+        {/* keyed by tab: the grid animates in on every tab switch */}
+        <div
+          key={typeTab}
+          className="grid grid-cols-5 gap-1.5 pr-2 animate-in fade-in slide-in-from-bottom-1 duration-200"
+        >
           {lines.map((l) => (
             <LineChip
               key={l.id}

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 import maplibregl, { GeoJSONSource, Map as MlMap } from "maplibre-gl"
 import type { MapLayerMouseEvent } from "maplibre-gl"
-import type { FeatureCollection, Point } from "geojson"
+import type { Feature, FeatureCollection, Point } from "geojson"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { allRoutesGeojsonUrl } from "@/lib/data"
+import { placeCoords } from "@/lib/geo"
 import { useAppStore } from "@/state/store"
 import { useResolvedDark } from "@/lib/use-resolved-dark"
 
@@ -305,6 +306,20 @@ function addTransitLayers(map: MlMap, dark: boolean) {
       "circle-stroke-color": "#3b82f6",
     },
   })
+
+  // Trip-planner endpoints (origin green / destination red) — topmost
+  map.addSource("plan-places", { type: "geojson", data: EMPTY_FC })
+  map.addLayer({
+    id: "plan-places-circle",
+    type: "circle",
+    source: "plan-places",
+    paint: {
+      "circle-color": ["match", ["get", "role"], "from", "#16a34a", "#dc2626"],
+      "circle-radius": 7,
+      "circle-stroke-width": 2.5,
+      "circle-stroke-color": "#ffffff",
+    },
+  })
 }
 
 export function MapView() {
@@ -322,6 +337,9 @@ export function MapView() {
   const showStops = useAppStore((s) => s.showStops)
   const focusStop = useAppStore((s) => s.focusStop)
   const itineraryOverlay = useAppStore((s) => s.itineraryOverlay)
+  const planFrom = useAppStore((s) => s.planFrom)
+  const planTo = useAppStore((s) => s.planTo)
+  const mapPick = useAppStore((s) => s.mapPick)
 
   const dark = useResolvedDark()
   const darkRef = useRef(dark)
@@ -344,6 +362,9 @@ export function MapView() {
       },
     })
     mapRef.current = map
+    if (import.meta.env.DEV) {
+      ;(window as unknown as Record<string, unknown>).__map = map
+    }
     map.addControl(
       new maplibregl.NavigationControl({ visualizePitch: false }),
       "top-right"
@@ -364,7 +385,15 @@ export function MapView() {
         interactionsRegistered = true
         const store = useAppStore.getState
 
+        // Planner "choose on map": any tap fills the pending from/to field
+        map.on("click", (e) => {
+          const s = store()
+          if (s.mapPick && s.view.kind === "plan")
+            s.pickPlace(e.lngLat.lng, e.lngLat.lat)
+        })
+
         map.on("click", "stop-clusters", async (e: MapLayerMouseEvent) => {
+          if (store().mapPick) return
           const feature = e.features?.[0]
           if (!feature) return
           const clusterId = feature.properties?.cluster_id
@@ -377,6 +406,7 @@ export function MapView() {
         })
 
         const selectStopFromFeature = (e: MapLayerMouseEvent) => {
+          if (store().mapPick) return
           const feature = e.features?.[0]
           if (feature?.properties?.id)
             store().selectStop(String(feature.properties.id))
@@ -385,6 +415,7 @@ export function MapView() {
         map.on("click", "line-stops-circle", selectStopFromFeature)
 
         map.on("click", "routes-line", (e: MapLayerMouseEvent) => {
+          if (store().mapPick) return
           const hits = map.queryRenderedFeatures(e.point, {
             layers: ["stops-circle", "line-stops-circle"],
           })
@@ -556,6 +587,37 @@ export function MapView() {
       })
     }
   }, [epoch, view.kind, itineraryOverlay])
+
+  // --- trip-planner endpoint markers + pick-on-map cursor ---
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || epoch === 0) return
+    const src = map.getSource("plan-places") as GeoJSONSource | undefined
+    if (view.kind !== "plan") {
+      src?.setData(EMPTY_FC)
+      return
+    }
+    const features: Feature[] = []
+    for (const [place, role] of [
+      [planFrom, "from"],
+      [planTo, "to"],
+    ] as const) {
+      const pt = placeCoords(place, stopsIndex)
+      if (pt)
+        features.push({
+          type: "Feature",
+          properties: { role },
+          geometry: { type: "Point", coordinates: pt },
+        })
+    }
+    src?.setData({ type: "FeatureCollection", features })
+  }, [epoch, view.kind, planFrom, planTo, stopsIndex])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    map.getCanvas().style.cursor = mapPick ? "crosshair" : ""
+  }, [mapPick])
 
   // --- selected stop highlight ---
   useEffect(() => {

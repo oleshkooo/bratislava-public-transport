@@ -33,8 +33,10 @@ export interface TransitLeg {
 
 export interface WalkLeg {
   kind: "walk"
+  /** null = the origin point (access walk) */
   fromStopId: string | null
-  toStopId: string
+  /** null = the destination point (egress walk) */
+  toStopId: string | null
   seconds: number
 }
 
@@ -48,8 +50,10 @@ export interface Itinerary {
 }
 
 export interface PlanQuery {
-  fromStopIds: string[]
-  toStopIds: string[]
+  /** candidate boarding stops with the walk time from the origin (0 = at the stop) */
+  sources: { stopId: string; walkSeconds: number }[]
+  /** candidate alighting stops with the walk time to the destination */
+  targets: { stopId: string; walkSeconds: number }[]
   /** seconds since local midnight (today) */
   departSeconds: number
   /** YYYYMMDD of "today" */
@@ -62,7 +66,7 @@ const BOARD_SLACK = 30
 const TRIP_TIMES_OFFSET = 2 // trips[i] = [serviceIdx, headsignIdx, t0, …]
 
 type Parent =
-  | { type: "origin" }
+  | { type: "origin"; walkSeconds: number }
   | {
       type: "trip"
       patternIdx: number
@@ -124,23 +128,33 @@ export function planTrips(
   const rounds: Int32Array[] = []
   const parents: Parent[][] = []
 
-  const targets = new Set(
-    query.toStopIds
-      .map((id) => stopIdxById.get(id))
-      .filter((x): x is number => x !== undefined)
-  )
+  // Egress walk per target stop; bestTarget tracks the best FINAL arrival
+  // (stop arrival + egress walk), so pruning on stop arrival stays safe.
+  const egress = new Map<number, number>()
+  for (const { stopId, walkSeconds } of query.targets) {
+    const t = stopIdxById.get(stopId)
+    if (t === undefined) continue
+    const cur = egress.get(t)
+    if (cur === undefined || walkSeconds < cur) egress.set(t, walkSeconds)
+  }
   let bestTarget = INF
+  const noteTarget = (s: number, arr: number) => {
+    const eg = egress.get(s)
+    if (eg !== undefined && arr + eg < bestTarget) bestTarget = arr + eg
+  }
 
-  // Round 0: origin + initial footpaths
+  // Round 0: origin (+ access walks) + initial footpaths
   const r0 = new Int32Array(n).fill(INF)
   const p0: Parent[] = new Array(n)
   let marked = new Set<number>()
-  for (const id of query.fromStopIds) {
-    const s = stopIdxById.get(id)
+  for (const { stopId, walkSeconds } of query.sources) {
+    const s = stopIdxById.get(stopId)
     if (s === undefined) continue
-    r0[s] = query.departSeconds
-    p0[s] = { type: "origin" }
-    best[s] = query.departSeconds
+    const t = query.departSeconds + walkSeconds
+    if (t >= r0[s]) continue
+    r0[s] = t
+    p0[s] = { type: "origin", walkSeconds }
+    best[s] = t
     marked.add(s)
   }
   for (const s of [...marked]) {
@@ -156,7 +170,7 @@ export function planTrips(
   }
   rounds.push(r0)
   parents.push(p0)
-  for (const t of targets) if (best[t] < bestTarget) bestTarget = best[t]
+  for (const s of marked) noteTarget(s, r0[s])
 
   for (let k = 1; k <= MAX_ROUNDS && marked.size > 0; k++) {
     const prev = rounds[k - 1]
@@ -199,7 +213,7 @@ export function planTrips(
               alightPos: i,
             }
             nextMarked.add(s)
-            if (targets.has(s) && arr < bestTarget) bestTarget = arr
+            noteTarget(s, arr)
           }
         }
 
@@ -244,7 +258,7 @@ export function planTrips(
           best[to] = t
           par[to] = { type: "walk", fromStop: s, seconds: sec }
           nextMarked.add(to)
-          if (targets.has(to) && t < bestTarget) bestTarget = t
+          noteTarget(to, t)
         }
       }
     }
@@ -259,14 +273,16 @@ export function planTrips(
   const seen = new Set<string>()
   for (let k = 1; k < rounds.length; k++) {
     let target = -1
-    let arrTime = INF
-    for (const t of targets) {
-      if (rounds[k][t] < arrTime) {
-        arrTime = rounds[k][t]
+    let finalArr = INF
+    for (const [t, eg] of egress) {
+      const a = rounds[k][t]
+      if (a < INF && a + eg < finalArr) {
+        finalArr = a + eg
         target = t
       }
     }
     if (target === -1) continue
+    const egressSeconds = egress.get(target)!
 
     const legs: Leg[] = []
     let stop = target
@@ -279,7 +295,17 @@ export function planTrips(
         ok = false
         break
       }
-      if (parent.type === "origin") break
+      if (parent.type === "origin") {
+        if (parent.walkSeconds > 0) {
+          legs.unshift({
+            kind: "walk",
+            fromStopId: null,
+            toStopId: data.stops[stop],
+            seconds: parent.walkSeconds,
+          })
+        }
+        break
+      }
       if (parent.type === "walk") {
         legs.unshift({
           kind: "walk",
@@ -307,6 +333,26 @@ export function planTrips(
       round -= 1
     }
     if (!ok) continue
+    if (egressSeconds > 0) {
+      legs.push({
+        kind: "walk",
+        fromStopId: data.stops[target],
+        toStopId: null,
+        seconds: egressSeconds,
+      })
+    }
+
+    // Merge back-to-back walks (access walk + platform transfer, etc.) into
+    // one leg — "walk 2 min to X, walk 1 min to X" reads as nonsense.
+    for (let i = legs.length - 1; i > 0; i--) {
+      const prev = legs[i - 1]
+      const cur = legs[i]
+      if (prev.kind === "walk" && cur.kind === "walk") {
+        prev.seconds += cur.seconds
+        prev.toStopId = cur.toStopId
+        legs.splice(i, 1)
+      }
+    }
 
     const transitLegs = legs.filter((l) => l.kind === "transit")
     if (transitLegs.length === 0) continue
@@ -320,13 +366,22 @@ export function planTrips(
 
     const first = transitLegs[0] as TransitLeg
     const last = transitLegs[transitLegs.length - 1] as TransitLeg
+    // depart = when to leave the origin (board time minus walks before boarding)
+    let preWalk = 0
+    for (const l of legs) {
+      if (l.kind === "transit") break
+      preWalk += l.seconds
+    }
+    let postWalk = 0
+    for (let i = legs.length - 1; i >= 0; i--) {
+      const l = legs[i]
+      if (l.kind === "transit") break
+      postWalk += l.seconds
+    }
     itineraries.push({
       legs,
-      depart: first.boardTime,
-      arrive:
-        legs[legs.length - 1].kind === "walk"
-          ? last.alightTime + (legs[legs.length - 1] as WalkLeg).seconds
-          : last.alightTime,
+      depart: first.boardTime - preWalk,
+      arrive: last.alightTime + postWalk,
       transfers: transitLegs.length - 1,
     })
   }

@@ -61,7 +61,7 @@ export function SearchBox() {
         />
       </div>
       {results && (results.lines.length > 0 || results.stops.length > 0) && (
-        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-md border bg-popover p-1 shadow-md animate-in fade-in slide-in-from-top-1 duration-150">
           {results.lines.length > 0 && (
             <div className="flex flex-wrap gap-1 p-1.5">
               {results.lines.map((l) => (

@@ -5,7 +5,9 @@ import {
   ArrowUpDown,
   Footprints,
   LoaderCircle,
+  LocateFixed,
   MapPin,
+  MapPinned,
   MoveRight,
   Search,
 } from "lucide-react"
@@ -21,8 +23,9 @@ import {
   type PlannerData,
   type TransitLeg,
 } from "@/lib/raptor"
-import { haversineM } from "@/lib/geo"
-import { useAppStore } from "@/state/store"
+import { haversineM, placeCoords } from "@/lib/geo"
+import type { StopIndexEntry } from "@/lib/types"
+import { SNAP_POINTS, useAppStore, type PlannerPlace } from "@/state/store"
 import { LineChip } from "@/features/lines/LineChip"
 import { cn } from "@/lib/utils"
 
@@ -32,27 +35,70 @@ const fold = (s: string) =>
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
 
-function StopNameField({
+// Walking model: same speed as the build script's footpaths, plus a detour
+// factor because access/egress distances are straight-line.
+const WALK_SPEED = 1.3 // m/s
+const WALK_DETOUR = 1.25
+/** Stops within this radius of a point are boarding/alighting candidates. */
+const ACCESS_RADIUS_M = 600
+const MAX_ACCESS_STOPS = 8
+/** If nothing is within the radius, still try the 3 nearest stops up to here. */
+const FALLBACK_MAX_M = 3000
+/** Offer a pure-walk itinerary when the places are this close. */
+const WALK_ONLY_MAX_M = 2500
+
+const walkSeconds = (meters: number) =>
+  Math.round((meters * WALK_DETOUR) / WALK_SPEED)
+
+/** Boarding/alighting candidates with access-walk times for a planner place. */
+function endCandidates(
+  place: PlannerPlace,
+  stopsIndex: StopIndexEntry[]
+): { stopId: string; walkSeconds: number }[] {
+  if (place.kind === "stop") {
+    return stopsIndex
+      .filter((s) => s.name === place.name)
+      .map((s) => ({ stopId: s.id, walkSeconds: 0 }))
+  }
+  const byDist = stopsIndex
+    .map((s) => ({
+      id: s.id,
+      d: haversineM(place.lon, place.lat, s.lon, s.lat),
+    }))
+    .sort((a, b) => a.d - b.d)
+  const within = byDist
+    .filter((c) => c.d <= ACCESS_RADIUS_M)
+    .slice(0, MAX_ACCESS_STOPS)
+  const chosen =
+    within.length > 0
+      ? within
+      : byDist.slice(0, 3).filter((c) => c.d <= FALLBACK_MAX_M)
+  return chosen.map((c) => ({ stopId: c.id, walkSeconds: walkSeconds(c.d) }))
+}
+
+function PlaceField({
   label,
   value,
   onChange,
   names,
+  onPickOnMap,
 }: {
   label: string
-  value: string
-  onChange: (name: string) => void
+  value: PlannerPlace | null
+  onChange: (p: PlannerPlace | null) => void
   names: string[]
+  onPickOnMap: () => void
 }) {
-  const [query, setQuery] = useState(value)
+  const text = value ? (value.kind === "stop" ? value.name : value.label) : ""
+  // While editing the input shows the draft; otherwise the value's label wins,
+  // so external changes (swap, map pick, my location) show up without a sync.
+  const [query, setQuery] = useState(text)
+  const [editing, setEditing] = useState(false)
+  const shown = editing ? query : value ? text : query
   const [open, setOpen] = useState(false)
+  const [locating, setLocating] = useState(false)
+  const [geoError, setGeoError] = useState(false)
   const ref = useRef<HTMLInputElement>(null)
-
-  // Sync external value (e.g. the swap button) into the input during render
-  const [prevValue, setPrevValue] = useState(value)
-  if (value !== prevValue) {
-    setPrevValue(value)
-    setQuery(value)
-  }
 
   const matches = useMemo(() => {
     const q = fold(query.trim())
@@ -60,24 +106,80 @@ function StopNameField({
     return names.filter((n) => fold(n).includes(q)).slice(0, 6)
   }, [query, names])
 
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setGeoError(true)
+      return
+    }
+    setLocating(true)
+    setGeoError(false)
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false)
+        setOpen(false)
+        onChange({
+          kind: "point",
+          lon: pos.coords.longitude,
+          lat: pos.coords.latitude,
+          label: "My location",
+        })
+      },
+      () => {
+        setLocating(false)
+        setGeoError(true)
+      },
+      { enableHighAccuracy: true, timeout: 10_000 }
+    )
+  }
+
   return (
     <div className="relative">
       <MapPin className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
       <Input
         ref={ref}
-        value={query}
+        value={shown}
         placeholder={label}
         aria-label={label}
         className="pl-8"
         onChange={(e) => {
           setQuery(e.target.value)
+          if (value) onChange(null)
           setOpen(true)
         }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onFocus={() => {
+          setEditing(true)
+          setQuery(value ? text : query)
+          setOpen(true)
+        }}
+        onBlur={() => {
+          setEditing(false)
+          setTimeout(() => setOpen(false), 150)
+        }}
       />
-      {open && matches.length > 0 && (
-        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-56 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+      {open && (
+        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-md border bg-popover p-1 shadow-md animate-in fade-in slide-in-from-top-1 duration-150">
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={useMyLocation}
+          >
+            <LocateFixed className="size-4 text-muted-foreground" />
+            {locating ? "Locating…" : "My location"}
+          </button>
+          <button
+            type="button"
+            className="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              setOpen(false)
+              ref.current?.blur()
+              onPickOnMap()
+            }}
+          >
+            <MapPinned className="size-4 text-muted-foreground" />
+            Choose on map
+          </button>
           {matches.map((name) => (
             <button
               key={name}
@@ -85,8 +187,7 @@ function StopNameField({
               className="w-full cursor-pointer truncate rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
-                onChange(name)
-                setQuery(name)
+                onChange({ kind: "stop", name })
                 setOpen(false)
                 ref.current?.blur()
               }}
@@ -95,6 +196,11 @@ function StopNameField({
             </button>
           ))}
         </div>
+      )}
+      {geoError && (
+        <p className="mt-1 text-xs text-destructive">
+          Couldn't get your location.
+        </p>
       )}
     </div>
   )
@@ -137,6 +243,13 @@ export function PlannerPanel() {
   const routesIndex = useAppStore((s) => s.routesIndex)
   const goBrowse = useAppStore((s) => s.goBrowse)
   const setItineraryOverlay = useAppStore((s) => s.setItineraryOverlay)
+  const planFrom = useAppStore((s) => s.planFrom)
+  const planTo = useAppStore((s) => s.planTo)
+  const setPlanFrom = useAppStore((s) => s.setPlanFrom)
+  const setPlanTo = useAppStore((s) => s.setPlanTo)
+  const mapPick = useAppStore((s) => s.mapPick)
+  const setMapPick = useAppStore((s) => s.setMapPick)
+  const setDrawerSnap = useAppStore((s) => s.setDrawerSnap)
 
   const [planner, setPlanner] = useState<PlannerData | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -150,7 +263,13 @@ export function PlannerPanel() {
     }
   }, [])
 
-  useEffect(() => () => setItineraryOverlay(null), [setItineraryOverlay])
+  useEffect(
+    () => () => {
+      setItineraryOverlay(null)
+      setMapPick(null)
+    },
+    [setItineraryOverlay, setMapPick]
+  )
 
   const names = useMemo(
     () =>
@@ -160,8 +279,6 @@ export function PlannerPanel() {
     [stopsIndex]
   )
 
-  const [from, setFrom] = useState("")
-  const [to, setTo] = useState("")
   const [timeMode, setTimeMode] = useState<"now" | "at">("now")
   const [timeStr, setTimeStr] = useState("")
   const [results, setResults] = useState<Itinerary[] | null>(null)
@@ -169,7 +286,7 @@ export function PlannerPanel() {
   const lineMeta = new Map(routesIndex?.lines.map((l) => [l.id, l]) ?? [])
 
   const search = () => {
-    if (!planner || !calendar || !from || !to) return
+    if (!planner || !calendar || !planFrom || !planTo) return
     const now = bratislavaNow()
     let departSeconds = now.seconds
     if (timeMode === "at" && /^\d{1,2}:\d{2}$/.test(timeStr)) {
@@ -177,19 +294,42 @@ export function PlannerPanel() {
       departSeconds = h * 3600 + m * 60
     }
     const itineraries = planTrips(planner, calendar, {
-      fromStopIds: stopsIndex.filter((s) => s.name === from).map((s) => s.id),
-      toStopIds: stopsIndex.filter((s) => s.name === to).map((s) => s.id),
+      sources: endCandidates(planFrom, stopsIndex),
+      targets: endCandidates(planTo, stopsIndex),
       departSeconds,
       dateKey: now.dateKey,
     })
-    setResults(itineraries)
+    // Nearby places: walking directly can beat (or be the only) connection
+    const a = placeCoords(planFrom, stopsIndex)
+    const b = placeCoords(planTo, stopsIndex)
+    if (a && b) {
+      const direct = haversineM(a[0], a[1], b[0], b[1])
+      if (direct > 0 && direct <= WALK_ONLY_MAX_M) {
+        const sec = walkSeconds(direct)
+        itineraries.push({
+          legs: [{ kind: "walk", fromStopId: null, toStopId: null, seconds: sec }],
+          depart: departSeconds,
+          arrive: departSeconds + sec,
+          transfers: 0,
+        })
+      }
+    }
+    itineraries.sort((x, y) => x.arrive - y.arrive || x.transfers - y.transfers)
+    const top = itineraries.slice(0, 5)
+    setResults(top)
     setSelected(null)
     setItineraryOverlay(null)
-    if (itineraries.length > 0) void select(itineraries[0], 0)
+    if (top.length > 0) void select(top[0], 0)
   }
 
   const select = async (it: Itinerary, idx: number) => {
     setSelected(idx)
+    const originPt = placeCoords(planFrom, stopsIndex)
+    const destPt = placeCoords(planTo, stopsIndex)
+    const stopPt = (id: string): [number, number] | null => {
+      const s = stopsById.get(id)
+      return s ? [s.lon, s.lat] : null
+    }
     const transit: Feature[] = []
     const walk: Feature[] = []
     const coords: [number, number][] = []
@@ -225,24 +365,20 @@ export function PlannerPanel() {
           geometry: { type: "LineString", coordinates: line },
         })
       } else {
-        const a = leg.fromStopId ? stopsById.get(leg.fromStopId) : undefined
-        const b = stopsById.get(leg.toStopId)
-        if (a && b && a.id !== b.id) {
-          coords.push([a.lon, a.lat], [b.lon, b.lat])
+        const aPt = leg.fromStopId ? stopPt(leg.fromStopId) : originPt
+        const bPt = leg.toStopId ? stopPt(leg.toStopId) : destPt
+        if (aPt && bPt && (aPt[0] !== bPt[0] || aPt[1] !== bPt[1])) {
+          coords.push(aPt, bPt)
           walk.push({
             type: "Feature",
             properties: {},
-            geometry: {
-              type: "LineString",
-              coordinates: [
-                [a.lon, a.lat],
-                [b.lon, b.lat],
-              ],
-            },
+            geometry: { type: "LineString", coordinates: [aPt, bPt] },
           })
         }
       }
     }
+    if (originPt) coords.push(originPt)
+    if (destPt) coords.push(destPt)
     setItineraryOverlay({ transit, walk, coords })
   }
 
@@ -260,19 +396,40 @@ export function PlannerPanel() {
         <div className="font-semibold">Trip planner</div>
       </div>
 
+      {mapPick && (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-primary/50 bg-accent px-2.5 py-1 text-xs animate-in fade-in slide-in-from-top-2 duration-200">
+          <span>
+            Tap the map to set the{" "}
+            {mapPick === "from" ? "starting point" : "destination"}.
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setMapPick(null)
+              setDrawerSnap(SNAP_POINTS[1])
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+
       <div className="flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <StopNameField
-            label="From stop…"
-            value={from}
-            onChange={setFrom}
+          <PlaceField
+            label="From: stop, location, map point…"
+            value={planFrom}
+            onChange={setPlanFrom}
             names={names}
+            onPickOnMap={() => setMapPick("from")}
           />
-          <StopNameField
-            label="To stop…"
-            value={to}
-            onChange={setTo}
+          <PlaceField
+            label="To: stop, location, map point…"
+            value={planTo}
+            onChange={setPlanTo}
             names={names}
+            onPickOnMap={() => setMapPick("to")}
           />
         </div>
         <Button
@@ -281,8 +438,8 @@ export function PlannerPanel() {
           className="mt-5"
           aria-label="Swap from and to"
           onClick={() => {
-            setFrom(to)
-            setTo(from)
+            setPlanFrom(planTo)
+            setPlanTo(planFrom)
           }}
         >
           <ArrowUpDown />
@@ -300,7 +457,17 @@ export function PlannerPanel() {
             <button
               key={value}
               type="button"
-              onClick={() => setTimeMode(value)}
+              onClick={() => {
+                setTimeMode(value)
+                if (value === "at" && !timeStr) {
+                  const now = bratislavaNow()
+                  const h = Math.floor(now.seconds / 3600) % 24
+                  const m = Math.floor((now.seconds % 3600) / 60)
+                  setTimeStr(
+                    `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
+                  )
+                }
+              }}
               className={cn(
                 "flex-1 cursor-pointer rounded-md py-1 text-xs font-medium transition-colors",
                 timeMode === value
@@ -314,18 +481,18 @@ export function PlannerPanel() {
         </div>
         {timeMode === "at" && (
           <Input
+            type="time"
             value={timeStr}
             onChange={(e) => setTimeStr(e.target.value)}
-            placeholder="HH:MM"
             aria-label="Departure time"
-            className="w-20 text-center tabular-nums"
+            className="w-28 text-center tabular-nums"
           />
         )}
       </div>
 
       <Button
         onClick={search}
-        disabled={!planner || !from || !to}
+        disabled={!planner || !planFrom || !planTo}
         className="w-full"
       >
         {!planner && !loadError ? (
@@ -349,7 +516,8 @@ export function PlannerPanel() {
             </div>
           ) : (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              Pick two stops to find scheduled connections.
+              Pick a start and destination — a stop, your location, or a point
+              on the map.
             </p>
           )
         ) : results.length === 0 ? (
@@ -357,7 +525,7 @@ export function PlannerPanel() {
             No connections found for this time.
           </p>
         ) : (
-          <div className="flex flex-col gap-2 pr-2">
+          <div className="flex flex-col gap-2 pr-2 animate-in fade-in slide-in-from-bottom-2 duration-300">
             {results.map((it, idx) => (
               <button
                 key={idx}
@@ -409,7 +577,7 @@ export function PlannerPanel() {
                   )}
                 </div>
                 {selected === idx && (
-                  <div className="flex flex-col gap-1 border-t pt-1.5 text-xs">
+                  <div className="flex flex-col gap-1 border-t pt-1.5 text-xs animate-in fade-in slide-in-from-top-1 duration-200">
                     {it.legs.map((leg, i) =>
                       leg.kind === "walk" ? (
                         <div
@@ -418,9 +586,11 @@ export function PlannerPanel() {
                         >
                           <Footprints className="size-3.5 shrink-0" />
                           Walk {formatDuration(leg.seconds)}
-                          {leg.toStopId && stopsById.get(leg.toStopId)
-                            ? ` to ${stopsById.get(leg.toStopId)!.name}`
-                            : ""}
+                          {leg.toStopId
+                            ? stopsById.get(leg.toStopId)
+                              ? ` to ${stopsById.get(leg.toStopId)!.name}`
+                              : ""
+                            : " to destination"}
                         </div>
                       ) : (
                         <TransitLegRow

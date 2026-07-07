@@ -27,6 +27,14 @@ export interface ItineraryOverlay {
   coords: [number, number][]
 }
 
+/** A trip-planner endpoint: a named stop (all its platforms) or a free point. */
+export type PlannerPlace =
+  | { kind: "stop"; name: string }
+  | { kind: "point"; lon: number; lat: number; label: string }
+
+/** Mobile drawer snap points: peek / half / full. */
+export const SNAP_POINTS = [0.18, 0.55, 0.94]
+
 interface AppState {
   booted: boolean
   bootError: string | null
@@ -56,6 +64,13 @@ interface AppState {
   recents: { lines: string[]; stops: string[] }
   /** selected trip-planner itinerary drawn on the map */
   itineraryOverlay: ItineraryOverlay | null
+  /** trip-planner endpoints (survive view switches; MapView draws markers) */
+  planFrom: PlannerPlace | null
+  planTo: PlannerPlace | null
+  /** which planner field the next map tap fills; collapses the mobile drawer */
+  mapPick: "from" | "to" | null
+  /** mobile drawer snap position (MobileDrawer renders it, actions may pull it up) */
+  drawerSnap: number | string | null
 
   boot: () => Promise<void>
   selectLine: (lineId: string, dir?: number) => void
@@ -72,6 +87,12 @@ interface AppState {
   focusStopOnMap: (id: string) => void
   toggleFavoriteLine: (id: string) => void
   toggleFavoriteStop: (id: string) => void
+  setPlanFrom: (p: PlannerPlace | null) => void
+  setPlanTo: (p: PlannerPlace | null) => void
+  setMapPick: (t: "from" | "to" | null) => void
+  setDrawerSnap: (s: number | string | null) => void
+  /** map tap while mapPick is active → fill that planner field */
+  pickPlace: (lon: number, lat: number) => void
 }
 
 function loadPersisted<T>(key: string, fallback: T): T {
@@ -93,6 +114,11 @@ function savePersisted(key: string, value: unknown) {
 
 function pushRecent(list: string[], id: string, max = 8): string[] {
   return [id, ...list.filter((x) => x !== id)].slice(0, max)
+}
+
+/** Opening content pulls a peeking mobile drawer up to half so it's visible. */
+function pulledUp(snap: number | string | null): number | string | null {
+  return snap === SNAP_POINTS[0] ? SNAP_POINTS[1] : snap
 }
 
 function writeHash(view: View) {
@@ -138,6 +164,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   favorites: loadPersisted("favorites", { lines: [], stops: [] }),
   recents: loadPersisted("recents", { lines: [], stops: [] }),
+  planFrom: null,
+  planTo: null,
+  mapPick: null,
+  drawerSnap: SNAP_POINTS[1],
 
   boot: async () => {
     try {
@@ -173,6 +203,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       lineDetail: null,
       typeTab: line.night ? "night" : line.type,
       recents,
+      drawerSnap: pulledUp(get().drawerSnap),
     })
     writeHash(view)
     loadLineDetail(lineId).then((detail) => {
@@ -218,6 +249,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       prevView: cur.kind === "stop" ? get().prevView : cur,
       stopPanelInit: null,
       recents,
+      drawerSnap: pulledUp(get().drawerSnap),
     })
     writeHash(view)
   },
@@ -229,7 +261,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   goPlan: () => {
     const view: View = { kind: "plan" }
-    set({ view, prevView: null, lineDetail: null })
+    set({
+      view,
+      prevView: null,
+      lineDetail: null,
+      drawerSnap: pulledUp(get().drawerSnap),
+    })
     writeHash(view)
   },
 
@@ -247,7 +284,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   goBrowse: () => {
-    set({ view: { kind: "browse" }, prevView: null, lineDetail: null })
+    set({
+      view: { kind: "browse" },
+      prevView: null,
+      lineDetail: null,
+      mapPick: null,
+    })
     writeHash({ kind: "browse" })
   },
 
@@ -274,6 +316,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     const favorites = { ...f, stops }
     savePersisted("favorites", favorites)
     set({ favorites })
+  },
+
+  setPlanFrom: (planFrom) => set({ planFrom }),
+  setPlanTo: (planTo) => set({ planTo }),
+  setMapPick: (mapPick) =>
+    // Entering pick mode collapses the drawer so the map is reachable;
+    // leaving it (cancel/unmount) touches nothing — pickPlace restores.
+    set(mapPick ? { mapPick, drawerSnap: SNAP_POINTS[0] } : { mapPick }),
+  setDrawerSnap: (drawerSnap) => set({ drawerSnap }),
+  pickPlace: (lon, lat) => {
+    const which = get().mapPick
+    if (!which) return
+    const place: PlannerPlace = {
+      kind: "point",
+      lon,
+      lat,
+      label: `Pin ${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+    }
+    set({
+      mapPick: null,
+      drawerSnap: SNAP_POINTS[1],
+      ...(which === "from" ? { planFrom: place } : { planTo: place }),
+    })
   },
 }))
 

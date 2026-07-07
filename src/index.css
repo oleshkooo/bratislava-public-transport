@@ -128,3 +128,35 @@
     @apply font-sans;
     }
 }
+
+/* vaul drawer handle (drag works only here — `handleOnly` on Drawer.Root).
+   Doubled attribute selectors out-specificity vaul's injected defaults. */
+[data-vaul-handle][data-vaul-handle] {
+    height: 0.375rem;
+    width: 3rem;
+    margin: 0.625rem auto;
+    flex-shrink: 0;
+    background: var(--muted-foreground);
+    opacity: 0.25;
+    cursor: grab;
+    touch-action: none;
+}
+[data-vaul-handle][data-vaul-handle]:hover,
+[data-vaul-handle][data-vaul-handle]:active {
+    opacity: 0.4;
+}
+/* Stretch the invisible drag target across the whole top strip of the drawer. */
+[data-vaul-handle-hitarea][data-vaul-handle-hitarea] {
+    width: 100vw;
+    height: 2.5rem;
+}
+
+/* Honor reduced-motion: collapse all CSS animations/transitions to instant. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+}

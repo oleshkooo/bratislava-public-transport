@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 import { CircleDot, Moon, Navigation, Route, Sun } from "lucide-react"
 import { Drawer } from "vaul"
 import { Button } from "@/components/ui/button"
@@ -13,10 +13,7 @@ import { LinePanel } from "@/features/lines/LinePanel"
 import { StopPanel } from "@/features/stops/StopPanel"
 import { PlannerPanel } from "@/features/planner/PlannerPanel"
 import { SearchBox } from "@/features/search/SearchBox"
-import { useAppStore } from "@/state/store"
-
-/** Drawer snap points on mobile: peek / half / full. */
-const SNAP_POINTS = [0.18, 0.55, 0.94]
+import { SNAP_POINTS, useAppStore } from "@/state/store"
 
 function PanelContent() {
   const view = useAppStore((s) => s.view)
@@ -25,6 +22,7 @@ function PanelContent() {
   const setShowRoutes = useAppStore((s) => s.setShowRoutes)
   const setShowStops = useAppStore((s) => s.setShowStops)
   const goPlan = useAppStore((s) => s.goPlan)
+  const goBrowse = useAppStore((s) => s.goBrowse)
   const { setTheme } = useTheme()
   const dark = useResolvedDark()
 
@@ -44,7 +42,7 @@ function PanelContent() {
               size="icon-sm"
               aria-label="Trip planner"
               title="Plan a trip"
-              onClick={goPlan}
+              onClick={() => (view.kind === "plan" ? goBrowse() : goPlan())}
             >
               <Navigation />
             </Button>
@@ -76,13 +74,19 @@ function PanelContent() {
             </Button>
           </div>
         </div>
-        <SearchBox />
+        {view.kind !== "plan" && <SearchBox />}
       </div>
 
-      {view.kind === "browse" && <LinesMenu />}
-      {view.kind === "line" && <LinePanel />}
-      {view.kind === "stop" && <StopPanel />}
-      {view.kind === "plan" && <PlannerPanel />}
+      {/* keyed by view kind: each panel animates in on switch */}
+      <div
+        key={view.kind}
+        className="flex min-h-0 flex-1 flex-col animate-in fade-in slide-in-from-bottom-2 duration-300"
+      >
+        {view.kind === "browse" && <LinesMenu />}
+        {view.kind === "line" && <LinePanel />}
+        {view.kind === "stop" && <StopPanel />}
+        {view.kind === "plan" && <PlannerPanel />}
+      </div>
 
       <p className="border-t px-3 py-1.5 text-[10px] leading-tight text-muted-foreground">
         Schedules: Dopravný podnik Bratislava / IDS BK (CC-BY 4.0) · Route
@@ -93,28 +97,22 @@ function PanelContent() {
 }
 
 function MobileDrawer() {
-  const view = useAppStore((s) => s.view)
-  const [snap, setSnap] = useState<number | string | null>(SNAP_POINTS[1])
-
-  // Opening a line/stop/planner from the map or search pulls the drawer up
-  // so the content is visible; collapsing back down is one swipe away.
-  // (state adjusted during render — the sanctioned pattern for derived resets)
-  const [prevView, setPrevView] = useState(view)
-  if (view !== prevView) {
-    setPrevView(view)
-    if (view.kind !== "browse" && snap === SNAP_POINTS[0]) {
-      setSnap(SNAP_POINTS[1])
-    }
-  }
+  // Snap position lives in the store: opening content pulls a peeking drawer
+  // up to half, and the planner's "choose on map" collapses it to peek.
+  const snap = useAppStore((s) => s.drawerSnap)
+  const setSnap = useAppStore((s) => s.setDrawerSnap)
 
   return (
     <Drawer.Root
       open
       modal={false}
       dismissible={false}
+      handleOnly
       snapPoints={SNAP_POINTS}
       activeSnapPoint={snap}
-      setActiveSnapPoint={setSnap}
+      // Tapping the handle at the top snap cycles past the end of the list —
+      // vaul hands us undefined there; treat it as "collapse back to peek".
+      setActiveSnapPoint={(s) => setSnap(s ?? SNAP_POINTS[0])}
     >
       <Drawer.Portal>
         <Drawer.Content
@@ -124,12 +122,7 @@ function MobileDrawer() {
           <Drawer.Title className="sr-only">
             Bratislava transit map panel
           </Drawer.Title>
-          <div
-            className="flex w-full shrink-0 cursor-grab justify-center py-2"
-            aria-hidden
-          >
-            <div className="h-1.5 w-12 rounded-full bg-muted-foreground/25" />
-          </div>
+          <Drawer.Handle />
           <PanelContent />
         </Drawer.Content>
       </Drawer.Portal>
