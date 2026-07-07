@@ -8,6 +8,8 @@ import { VitePWA } from "vite-plugin-pwa"
 export default defineConfig({
   // GitHub Pages serves from /<repo>/ — CI sets BASE_PATH accordingly
   base: process.env.BASE_PATH ?? "/",
+  // PORT lets tooling (preview harness) assign a free port; vite default otherwise
+  server: process.env.PORT ? { port: Number(process.env.PORT) } : undefined,
   plugins: [
     react(),
     tailwindcss(),
