@@ -3,8 +3,10 @@ import maplibregl, { GeoJSONSource, Map as MlMap } from "maplibre-gl"
 import type { MapLayerMouseEvent } from "maplibre-gl"
 import type { Feature, FeatureCollection, Point } from "geojson"
 import "maplibre-gl/dist/maplibre-gl.css"
-import { allRoutesGeojsonUrl } from "@/lib/data"
+import { allRoutesGeojsonUrl, loadLineDetail, loadPlanner } from "@/lib/data"
 import { placeCoords } from "@/lib/geo"
+import { activeServiceIds, bratislavaNow, previousDateKey } from "@/lib/service-day"
+import { computeVehicles } from "@/features/vehicles/vehicles"
 import { useAppStore } from "@/state/store"
 import { useResolvedDark } from "@/lib/use-resolved-dark"
 
@@ -307,6 +309,43 @@ function addTransitLayers(map: MlMap, dark: boolean) {
     },
   })
 
+  // Schedule-interpolated vehicle positions (toggle in the header)
+  map.addSource("vehicles", { type: "geojson", data: EMPTY_FC })
+  map.addLayer({
+    id: "vehicles-circle",
+    type: "circle",
+    source: "vehicles",
+    paint: {
+      "circle-color": ["get", "color"],
+      "circle-radius": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        10,
+        3.5,
+        13,
+        6.5,
+        16,
+        9,
+      ],
+      "circle-stroke-width": 1.5,
+      "circle-stroke-color": "#ffffff",
+    },
+  })
+  map.addLayer({
+    id: "vehicles-label",
+    type: "symbol",
+    source: "vehicles",
+    minzoom: 12.5,
+    layout: {
+      "text-field": ["get", "line"],
+      "text-font": ["Noto Sans Regular"],
+      "text-size": 9,
+      "text-allow-overlap": true,
+    },
+    paint: { "text-color": ["get", "textColor"] },
+  })
+
   // Trip-planner endpoints (origin green / destination red) — topmost
   map.addSource("plan-places", { type: "geojson", data: EMPTY_FC })
   map.addLayer({
@@ -331,6 +370,9 @@ export function MapView() {
   const booted = useAppStore((s) => s.booted)
   const stopsIndex = useAppStore((s) => s.stopsIndex)
   const stopsById = useAppStore((s) => s.stopsById)
+  const calendar = useAppStore((s) => s.calendar)
+  const routesIndex = useAppStore((s) => s.routesIndex)
+  const showVehicles = useAppStore((s) => s.showVehicles)
   const view = useAppStore((s) => s.view)
   const lineDetail = useAppStore((s) => s.lineDetail)
   const showRoutes = useAppStore((s) => s.showRoutes)
@@ -622,6 +664,87 @@ export function MapView() {
     if (!map) return
     map.getCanvas().style.cursor = mapPick ? "crosshair" : ""
   }, [mapPick])
+
+  // --- schedule-interpolated vehicle positions (pseudo-realtime) ---
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || epoch === 0) return
+    const setVehicles = (features: Feature[]) =>
+      (map.getSource("vehicles") as GeoJSONSource | undefined)?.setData({
+        type: "FeatureCollection",
+        features,
+      })
+    if (!showVehicles || !calendar) {
+      setVehicles([])
+      return
+    }
+    let cancelled = false
+    // direction geometries load lazily as vehicles on those lines appear
+    const geoms = new Map<string, [number, number][] | null>()
+    const requestGeom = (line: string, dir: number) => {
+      const key = `${line}|${dir}`
+      if (geoms.has(key)) return geoms.get(key) ?? null
+      geoms.set(key, null)
+      loadLineDetail(line)
+        .then((d) => {
+          if (cancelled) return
+          for (const dd of d.directions)
+            geoms.set(`${line}|${dd.id}`, dd.geometry)
+        })
+        .catch(() => {
+          // keep null — vehicles interpolate stop-to-stop for this line
+        })
+      return null
+    }
+    const lineMeta = new Map(routesIndex?.lines.map((l) => [l.id, l]) ?? [])
+    let plannerData: import("@/lib/raptor").PlannerData | null = null
+    let todayActive: boolean[] = []
+    let yesterdayActive: boolean[] = []
+    let dateKeyCached = ""
+    const tick = () => {
+      if (cancelled || !plannerData) return
+      const now = bratislavaNow()
+      if (now.dateKey !== dateKeyCached) {
+        dateKeyCached = now.dateKey
+        const today = activeServiceIds(calendar, now.dateKey)
+        const yesterday = activeServiceIds(
+          calendar,
+          previousDateKey(now.dateKey)
+        )
+        todayActive = plannerData.services.map((id) => today.has(id))
+        yesterdayActive = plannerData.services.map((id) => yesterday.has(id))
+      }
+      const data = plannerData
+      setVehicles(
+        computeVehicles({
+          planner: data,
+          todayActive,
+          yesterdayActive,
+          nowSec: now.seconds,
+          stopCoord: (idx) => {
+            const s = stopsById.get(data.stops[idx])
+            return s ? [s.lon, s.lat] : null
+          },
+          patternGeom: requestGeom,
+          lineColor: (line) => ({
+            color: `#${lineMeta.get(line)?.color ?? "888888"}`,
+            textColor: `#${lineMeta.get(line)?.textColor ?? "FFFFFF"}`,
+          }),
+        })
+      )
+    }
+    void loadPlanner().then((d) => {
+      if (cancelled) return
+      plannerData = d
+      tick()
+    })
+    const interval = window.setInterval(tick, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+      setVehicles([])
+    }
+  }, [epoch, showVehicles, calendar, stopsById, routesIndex])
 
   // --- selected stop highlight ---
   useEffect(() => {

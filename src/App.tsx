@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { CircleDot, Moon, Navigation, Route, Sun } from "lucide-react"
+import { BusFront, CircleDot, Moon, Navigation, Route, Sun } from "lucide-react"
 import { Drawer } from "vaul"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
@@ -19,8 +19,10 @@ function PanelContent() {
   const view = useAppStore((s) => s.view)
   const showRoutes = useAppStore((s) => s.showRoutes)
   const showStops = useAppStore((s) => s.showStops)
+  const showVehicles = useAppStore((s) => s.showVehicles)
   const setShowRoutes = useAppStore((s) => s.setShowRoutes)
   const setShowStops = useAppStore((s) => s.setShowStops)
+  const setShowVehicles = useAppStore((s) => s.setShowVehicles)
   const goPlan = useAppStore((s) => s.goPlan)
   const goBrowse = useAppStore((s) => s.goBrowse)
   const { setTheme } = useTheme()
@@ -63,6 +65,15 @@ function PanelContent() {
               title="Show all stops"
             >
               <CircleDot />
+            </Toggle>
+            <Toggle
+              size="sm"
+              pressed={showVehicles}
+              onPressedChange={setShowVehicles}
+              aria-label="Toggle vehicle positions"
+              title="Vehicle positions — interpolated from the schedule, not live"
+            >
+              <BusFront />
             </Toggle>
             <Button
               variant="ghost"

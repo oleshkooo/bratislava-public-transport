@@ -50,6 +50,8 @@ interface AppState {
   typeTab: TypeTab
   showRoutes: boolean
   showStops: boolean
+  /** schedule-interpolated vehicle markers on the map (no live feed) */
+  showVehicles: boolean
   /** one-shot map focus request from list clicks; ts forces re-trigger for same stop */
   focusStop: { id: string; ts: number } | null
   /** consumed by StopPanel to open a specific tab / line filter */
@@ -87,6 +89,7 @@ interface AppState {
   setTypeTab: (tab: TypeTab) => void
   setShowRoutes: (v: boolean) => void
   setShowStops: (v: boolean) => void
+  setShowVehicles: (v: boolean) => void
   focusStopOnMap: (id: string) => void
   toggleFavoriteLine: (id: string) => void
   toggleFavoriteStop: (id: string) => void
@@ -201,6 +204,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   typeTab: "tram",
   showRoutes: true,
   showStops: true,
+  showVehicles: false,
   focusStop: null,
   stopPanelInit: null,
   itineraryOverlay: null,
@@ -352,6 +356,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTypeTab: (typeTab) => set({ typeTab }),
   setShowRoutes: (showRoutes) => set({ showRoutes }),
   setShowStops: (showStops) => set({ showStops }),
+  setShowVehicles: (showVehicles) => set({ showVehicles }),
   focusStopOnMap: (id) => set({ focusStop: { id, ts: Date.now() } }),
 
   toggleFavoriteLine: (id) => {
