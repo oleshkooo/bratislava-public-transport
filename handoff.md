@@ -42,13 +42,16 @@ fetches those files on demand. URL hash is the source of truth for navigation
 | `routes/{line}.json` | per line: directions, headsigns, ordered stops, geometry (+source) |
 | `stops/{platformId}.json` × 1355 | full departure board per platform (short keys `l,d,h,s,t`) |
 | `planner.json` (4.5 MB, ~650 KB gz) | RAPTOR dataset: patterns + all trip times + footpath transfers |
+| `walk-graph.json` (5 MB, ~1.7 MB gz) | pedestrian graph (142k nodes/180k edges) for routed walking legs |
 | `build-warnings.json` | whatever the build flagged |
 
 ### Caches
 
-- `.cache/` (gitignored): `gtfs.zip`, `osm-raw.json`, `tram-rails-raw.json` — delete to re-fetch.
+- `.cache/` (gitignored): `gtfs.zip`, `osm-raw.json`, `tram-rails-raw.json`,
+  `walk-raw.json` (~47 MB) — delete to re-fetch.
 - `data-cache/` (**committed**, CI fallback when Overpass is down): `osm-geometries.json`
-  (241 stitched relation polylines), `tram-rails.json` (640 `railway=tram` ways).
+  (241 stitched relation polylines), `tram-rails.json` (640 `railway=tram` ways),
+  `walk-graph.json` (processed pedestrian graph, 5 MB).
 - `OSM_REFRESH=1 npm run build:data` forces both OSM re-fetches, falls back to committed cache on failure.
 
 ## Hard-won domain knowledge (do not relearn)
@@ -117,6 +120,13 @@ mirrors (kumi.systems, private.coffee); all three are in `OVERPASS_ENDPOINTS`.
 - eslint runs react-hooks v7: no sync `setState` in effects — use the
   "adjust state during render" pattern (see `StopPanel`, `PlannerPanel`, `MobileDrawer`);
   `react-refresh/only-export-components` is off for `src/components/ui/**`.
+- **Vehicle positions** (header BusFront toggle) are schedule-interpolated, not live:
+  every active trip is placed along its direction geometry between the two stops it is
+  between right now ([src/features/vehicles/vehicles.ts](src/features/vehicles/vehicles.ts)),
+  refreshed every 5 s; direction geometries lazy-load per line. Falls back to
+  stop-to-stop interpolation while geometry loads. Sits in its own commit for easy revert.
+- The JS bundle is split: maplibre lives in its own vendor chunk (~273 KB gz, stable
+  across deploys); app code is ~124 KB gz.
 - Micro-animations use **tw-animate-css** (`animate-in fade-in slide-in-from-* duration-*`):
   panel switches (keyed wrapper in App), search/place dropdowns, planner results and
   expanded details, lines-grid tab switches. A global `prefers-reduced-motion` rule in
@@ -141,10 +151,15 @@ A pure-walk itinerary is added when the places are ≤2.5 km apart; back-to-back
 markers render via the `plan-places` map source (green origin / red destination); the
 itinerary overlay slices the real line geometry between board/alight stops
 (`sliceGeometry` in PlannerPanel), falling back to the stop-to-stop path. **Walk legs are
-straight dashed lines by design** — there's no client-side pedestrian graph; street-level
-walking routes would need an external routing API or shipping an OSM footway graph.
+drawn along real streets** via A* over the lazy-loaded footway graph
+([src/lib/walk.ts](src/lib/walk.ts)); the straight dashed line remains the fallback, and
+walking *times* stay on the straight-line model shared with RAPTOR. While an itinerary is
+drawn (or a line selected), the overview layer dims to 0.08 and stop dots hide.
 Departure time uses a native `<input type="time">` (iOS wheel). The planner toolbar icon
 toggles the planner open/closed, and the global search box is hidden in the plan view.
+Trips are shareable: `#plan&from=s:<stop>|p:<lat,lon>&to=…&at=HH:MM` tracks the current
+trip (share button in the header; opening a link auto-searches). Results sort by trip
+duration.
 
 ## Known rough edges / next steps
 

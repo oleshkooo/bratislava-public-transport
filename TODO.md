@@ -4,23 +4,20 @@ Roadmap beyond the shipped M0–M9 plan (see [docs/PLAN.md](docs/PLAN.md)) and t
 P1/P2 later phases (real-time feed, regional coverage — both blocked on external
 data sources). Ordered roughly by value.
 
-## In progress / this iteration
+## Shipped 2026-07-07
 
-- [ ] **Dim other routes when a line or itinerary is selected** — the overview
-      layer stays at full opacity behind the selected route; drop it to ~0.1 so
-      the active path reads instantly.
-- [ ] **Share-link for planner trips** — encode from/to/time in the URL hash
-      (`#plan=…`) so a planned trip can be sent to someone.
-- [ ] **Pedestrian graph** — walking legs currently draw (and are timed) as
-      straight lines × 1.25 detour ÷ 1.3 m/s. Build an OSM footway graph in the
-      data pipeline (like the tram-rail graph), route walk legs over it client-side.
-- [ ] **Performance** — split maplibre into its own vendor chunk (stable across
-      deploys), preconnect to the tile server; later: compact `stops/` (43 MB on
-      disk) with legend arrays.
-- [ ] **Pseudo-realtime vehicle positions** — no public GTFS-RT exists, but
-      scheduled positions can be interpolated along route geometry and animated
-      on the map (honest "scheduled, not live" badge). Kept in its own commit so
-      it's easy to revert.
+- [x] **Dim other routes when a line or itinerary is selected** (overview → 0.08,
+      stop dots hidden while focused).
+- [x] **Share-link for planner trips** — `#plan&from=…&to=…&at=HH:MM`, share
+      button, auto-search on open.
+- [x] **Pedestrian graph** — OSM footway graph in the pipeline
+      (`walk-graph.json`, 1.7 MB gz), walk legs drawn along real streets via
+      client-side A*. Walking *times* still use the straight-line model.
+- [x] **Performance** — maplibre in its own vendor chunk, tile-server
+      preconnect. Still open: compact `stops/` (43 MB on disk) with legend arrays.
+- [x] **Pseudo-realtime vehicle positions** — schedule-interpolated markers
+      (header toggle, refreshed every 5 s, honest "not live" title). Own commit
+      for easy revert.
 
 ## Next up
 
