@@ -150,6 +150,14 @@
     width: 100vw;
     height: 2.5rem;
 }
+/* vaul doesn't forward modal={false} to the radix Dialog underneath, so radix
+   marks the always-open drawer modal and sets pointer-events: none on <body>.
+   vaul counter-restores "auto" once per open via requestAnimationFrame — a
+   race it sometimes loses, leaving the whole map dead to touches. There are
+   no real modals in this app, so pin body pointer events instead. */
+body {
+    pointer-events: auto !important;
+}
 
 /* Honor reduced-motion: collapse all CSS animations/transitions to instant. */
 @media (prefers-reduced-motion: reduce) {
