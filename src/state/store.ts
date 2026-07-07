@@ -69,6 +69,9 @@ interface AppState {
   planTo: PlannerPlace | null
   /** which planner field the next map tap fills; collapses the mobile drawer */
   mapPick: "from" | "to" | null
+  /** planner departure time (in the store so share links can carry it) */
+  planTimeMode: "now" | "at"
+  planTimeStr: string
   /** mobile drawer snap position (MobileDrawer renders it, actions may pull it up) */
   drawerSnap: number | string | null
 
@@ -90,6 +93,7 @@ interface AppState {
   setPlanFrom: (p: PlannerPlace | null) => void
   setPlanTo: (p: PlannerPlace | null) => void
   setMapPick: (t: "from" | "to" | null) => void
+  setPlanTime: (mode: "now" | "at", str?: string) => void
   setDrawerSnap: (s: number | string | null) => void
   /** map tap while mapPick is active → fill that planner field */
   pickPlace: (lon: number, lat: number) => void
@@ -119,6 +123,45 @@ function pushRecent(list: string[], id: string, max = 8): string[] {
 /** Opening content pulls a peeking mobile drawer up to half so it's visible. */
 function pulledUp(snap: number | string | null): number | string | null {
   return snap === SNAP_POINTS[0] ? SNAP_POINTS[1] : snap
+}
+
+/** `s:<stop name>` or `p:<lat>,<lon>` in the plan hash params. */
+function encodePlace(p: PlannerPlace): string {
+  return p.kind === "stop"
+    ? `s:${p.name}`
+    : `p:${p.lat.toFixed(5)},${p.lon.toFixed(5)}`
+}
+
+function decodePlace(v: string | null): PlannerPlace | null {
+  if (!v) return null
+  if (v.startsWith("s:")) return { kind: "stop", name: v.slice(2) }
+  if (v.startsWith("p:")) {
+    const [lat, lon] = v.slice(2).split(",").map(Number)
+    if (Number.isFinite(lat) && Number.isFinite(lon))
+      return {
+        kind: "point",
+        lat,
+        lon,
+        label: `Pin ${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+      }
+  }
+  return null
+}
+
+/** #plan&from=…&to=…&at=HH:MM — a shareable link to a planned trip. */
+function planHash(s: {
+  planFrom: PlannerPlace | null
+  planTo: PlannerPlace | null
+  planTimeMode: "now" | "at"
+  planTimeStr: string
+}): string {
+  const parts = ["plan"]
+  if (s.planFrom)
+    parts.push(`from=${encodeURIComponent(encodePlace(s.planFrom))}`)
+  if (s.planTo) parts.push(`to=${encodeURIComponent(encodePlace(s.planTo))}`)
+  if (s.planTimeMode === "at" && s.planTimeStr)
+    parts.push(`at=${s.planTimeStr}`)
+  return "#" + parts.join("&")
 }
 
 function writeHash(view: View) {
@@ -167,6 +210,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   planFrom: null,
   planTo: null,
   mapPick: null,
+  planTimeMode: "now",
+  planTimeStr: "",
   drawerSnap: SNAP_POINTS[1],
 
   boot: async () => {
@@ -182,7 +227,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       const initial = parseHash()
       if (initial.kind === "line") get().selectLine(initial.lineId, initial.dir)
       else if (initial.kind === "stop") get().selectStop(initial.stopId)
-      else if (initial.kind === "plan") get().goPlan()
+      else if (initial.kind === "plan") {
+        // Share links carry the trip: #plan&from=…&to=…&at=HH:MM
+        const params = new URLSearchParams(location.hash.slice(1))
+        const at = params.get("at")
+        set({
+          planFrom: decodePlace(params.get("from")),
+          planTo: decodePlace(params.get("to")),
+          ...(at && /^\d{1,2}:\d{2}$/.test(at)
+            ? { planTimeMode: "at" as const, planTimeStr: at }
+            : {}),
+        })
+        get().goPlan()
+      }
     } catch (e) {
       set({ bootError: String(e) })
     }
@@ -260,14 +317,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   goPlan: () => {
-    const view: View = { kind: "plan" }
     set({
-      view,
+      view: { kind: "plan" },
       prevView: null,
       lineDetail: null,
       drawerSnap: pulledUp(get().drawerSnap),
     })
-    writeHash(view)
+    history.replaceState(null, "", planHash(get()))
   },
 
   setItineraryOverlay: (itineraryOverlay) => set({ itineraryOverlay }),
@@ -318,12 +374,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ favorites })
   },
 
-  setPlanFrom: (planFrom) => set({ planFrom }),
-  setPlanTo: (planTo) => set({ planTo }),
+  setPlanFrom: (planFrom) => {
+    set({ planFrom })
+    if (get().view.kind === "plan")
+      history.replaceState(null, "", planHash(get()))
+  },
+  setPlanTo: (planTo) => {
+    set({ planTo })
+    if (get().view.kind === "plan")
+      history.replaceState(null, "", planHash(get()))
+  },
   setMapPick: (mapPick) =>
     // Entering pick mode collapses the drawer so the map is reachable;
     // leaving it (cancel/unmount) touches nothing — pickPlace restores.
     set(mapPick ? { mapPick, drawerSnap: SNAP_POINTS[0] } : { mapPick }),
+  setPlanTime: (planTimeMode, planTimeStr) => {
+    set({
+      planTimeMode,
+      ...(planTimeStr !== undefined ? { planTimeStr } : {}),
+    })
+    if (get().view.kind === "plan")
+      history.replaceState(null, "", planHash(get()))
+  },
   setDrawerSnap: (drawerSnap) => set({ drawerSnap }),
   pickPlace: (lon, lat) => {
     const which = get().mapPick
@@ -339,6 +411,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       drawerSnap: SNAP_POINTS[1],
       ...(which === "from" ? { planFrom: place } : { planTo: place }),
     })
+    history.replaceState(null, "", planHash(get()))
   },
 }))
 

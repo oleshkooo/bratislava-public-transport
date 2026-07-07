@@ -3,6 +3,7 @@ import type { Feature } from "geojson"
 import {
   ArrowLeft,
   ArrowUpDown,
+  Check,
   Footprints,
   LoaderCircle,
   LocateFixed,
@@ -10,6 +11,7 @@ import {
   MapPinned,
   MoveRight,
   Search,
+  Share2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -250,6 +252,9 @@ export function PlannerPanel() {
   const mapPick = useAppStore((s) => s.mapPick)
   const setMapPick = useAppStore((s) => s.setMapPick)
   const setDrawerSnap = useAppStore((s) => s.setDrawerSnap)
+  const timeMode = useAppStore((s) => s.planTimeMode)
+  const timeStr = useAppStore((s) => s.planTimeStr)
+  const setPlanTime = useAppStore((s) => s.setPlanTime)
 
   const [planner, setPlanner] = useState<PlannerData | null>(null)
   const [loadError, setLoadError] = useState(false)
@@ -279,11 +284,25 @@ export function PlannerPanel() {
     [stopsIndex]
   )
 
-  const [timeMode, setTimeMode] = useState<"now" | "at">("now")
-  const [timeStr, setTimeStr] = useState("")
   const [results, setResults] = useState<Itinerary[] | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
   const lineMeta = new Map(routesIndex?.lines.map((l) => [l.id, l]) ?? [])
+
+  const shareTrip = async () => {
+    const url = location.href
+    if (navigator.share) {
+      try {
+        await navigator.share({ url })
+      } catch {
+        // user dismissed the share sheet
+      }
+    } else {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }
+  }
 
   const search = () => {
     if (!planner || !calendar || !planFrom || !planTo) return
@@ -388,6 +407,17 @@ export function PlannerPanel() {
     setItineraryOverlay({ transit, walk, coords })
   }
 
+  // Opening a share link (or returning to the tab with both places set)
+  // searches right away instead of waiting for a button press.
+  const autoSearched = useRef(false)
+  useEffect(() => {
+    if (autoSearched.current) return
+    if (!planner || !calendar || !planFrom || !planTo) return
+    autoSearched.current = true
+    const t = setTimeout(search, 0)
+    return () => clearTimeout(t)
+  })
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-3 pt-2">
       <div className="flex items-center gap-2">
@@ -400,6 +430,18 @@ export function PlannerPanel() {
           <ArrowLeft />
         </Button>
         <div className="font-semibold">Trip planner</div>
+        {planFrom && planTo && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="ml-auto"
+            aria-label="Share this trip"
+            title="Share a link to this trip"
+            onClick={() => void shareTrip()}
+          >
+            {copied ? <Check /> : <Share2 />}
+          </Button>
+        )}
       </div>
 
       {mapPick && (
@@ -464,14 +506,16 @@ export function PlannerPanel() {
               key={value}
               type="button"
               onClick={() => {
-                setTimeMode(value)
                 if (value === "at" && !timeStr) {
                   const now = bratislavaNow()
                   const h = Math.floor(now.seconds / 3600) % 24
                   const m = Math.floor((now.seconds % 3600) / 60)
-                  setTimeStr(
+                  setPlanTime(
+                    value,
                     `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`
                   )
+                } else {
+                  setPlanTime(value)
                 }
               }}
               className={cn(
@@ -489,7 +533,7 @@ export function PlannerPanel() {
           <Input
             type="time"
             value={timeStr}
-            onChange={(e) => setTimeStr(e.target.value)}
+            onChange={(e) => setPlanTime("at", e.target.value)}
             aria-label="Departure time"
             className="w-28 text-center tabular-nums"
           />
