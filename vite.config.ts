@@ -66,4 +66,15 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // maplibre is ~2/3 of the bundle and changes only on dependency
+        // bumps — its own chunk stays cached across app deploys
+        manualChunks(id: string) {
+          if (id.includes("node_modules/maplibre-gl")) return "maplibre"
+        },
+      },
+    },
+  },
 })
