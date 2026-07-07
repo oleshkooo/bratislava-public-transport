@@ -1,9 +1,11 @@
 # Handoff — Bratislava Transit Map
 
-Last updated: 2026-07-07 (second iteration). State: **all plan milestones M0–M9 shipped
+Last updated: 2026-07-07 (third iteration). State: **all plan milestones M0–M9 shipped
 and deployed**, plus a post-plan round: location→location planner with routed walking
 legs, share links, schedule-interpolated vehicle positions, overview dimming, bundle
-split. Backlog lives in [TODO.md](TODO.md).
+split. This iteration: vehicles filtered to the map focus, two mobile-drawer bugfixes
+(iOS keyboard, body pointer-events race), dismissible attribution card.
+Backlog lives in [TODO.md](TODO.md).
 Live: <https://oleshkooo.github.io/bratislava-public-transport/> · Plan: [docs/PLAN.md](docs/PLAN.md)
 
 ## What this is
@@ -122,6 +124,24 @@ walkable-ways query is the heavy one (~47 MB response, 600 s timeout) — it onl
   selectLine/selectStop/goPlan pull a peeking drawer to half, the planner's
   "choose on map" collapses it to peek and `pickPlace` restores half. Map
   `fitBounds` padding assumes the half-open drawer (`fitPadding()` in MapView).
+  **iOS keyboard**: vaul's `repositionInputs` (default on) recomputes the
+  transform against the shrunken visualViewport and throws a snap-point drawer
+  off-screen — it is disabled; instead a focusin on any `input`/`textarea`
+  inside `Drawer.Content` pulls the drawer to the full snap so the field sits
+  above the keyboard.
+  **Body pointer-events**: vaul doesn't forward `modal={false}` to the radix
+  Dialog underneath, so radix marks the always-open drawer modal and sets
+  `pointer-events: none` on `<body>`; vaul counter-restores `auto` via one
+  requestAnimationFrame per open — a race it sometimes loses, leaving the map
+  dead to touches. index.css pins `body { pointer-events: auto !important }`
+  (safe: the app has no real modals — revisit if one is ever added).
+- Attribution is a custom dismissible card ([src/map/MapAttribution.tsx](src/map/MapAttribution.tsx)),
+  not maplibre's control (whose default spot the drawer covers on mobile):
+  top-left on mobile / bottom-right on desktop, credits DPB/IDS BK (CC-BY),
+  OSM (ODbL), OpenFreeMap, OpenMapTiles. The ✕ collapses it to an ⓘ button and
+  persists in localStorage (`attribution-dismissed`) — it must never disappear
+  entirely, ODbL requires the credits to stay reachable. The panel footer
+  (App.tsx) carries the same line, fully visible at the full drawer snap.
 - base-ui differences: `ToggleGroup` value is an **array**; `Toggle` uses `pressed`/
   `onPressedChange`; nested `<button>` is a real hazard — `LineChip` renders a `<span>`
   when it has no `onClick` specifically so chips can live inside clickable cards.
@@ -134,7 +154,10 @@ walkable-ways query is the heavy one (~47 MB response, 600 s timeout) — it onl
   every active trip is placed along its direction geometry between the two stops it is
   between right now ([src/features/vehicles/vehicles.ts](src/features/vehicles/vehicles.ts)),
   refreshed every 5 s; direction geometries lazy-load per line. Falls back to
-  stop-to-stop interpolation while geometry loads. Sits in its own commit for easy revert.
+  stop-to-stop interpolation while geometry loads. Mirroring the overview-dimming rule,
+  vehicles are filtered to the selected line (or the drawn itinerary's lines;
+  walk-only itinerary → none) — `vehicleFilterKey` in MapView + `lineFilter` in
+  `computeVehicles`. Sits in its own commit for easy revert.
 - The JS bundle is split: maplibre lives in its own vendor chunk (~273 KB gz, stable
   across deploys); app code is ~124 KB gz.
 - Micro-animations use **tw-animate-css** (`animate-in fade-in slide-in-from-* duration-*`):
@@ -188,6 +211,11 @@ The prioritized backlog is [TODO.md](TODO.md). Standing constraints:
   — regenerate manually if the icon changes; CI does not rebuild them).
 - Dropped pins have no reverse geocoding (labels are raw coordinates) — an external
   geocoder would break the fully-static/offline design; accepted for now.
+- **Diagnosed, not fixed**: `selectLine`'s `loadLineDetail(...).then(...)` has no
+  `.catch` — one failed fetch leaves `lineDetail` null forever (no fitBounds, panel
+  stuck on skeleton) until the line is re-selected or the page reloaded. Second
+  suspect for "map didn't center": GeolocateControl's track-lock re-centering can
+  cancel a running `fitBounds`. Add a retry/error surface when it bites again.
 
 ## Verification playbook
 
@@ -201,8 +229,13 @@ map-picked points (expects access/egress walk legs **routed along streets**, end
 markers, dimmed overview while the itinerary is drawn, walk-only option for nearby
 points); share link round-trip: with a trip set, copy the URL, open it in a fresh tab —
 it must restore both places + time and auto-search; vehicles toggle (BusFront in the
-header) shows a few hundred colored dots moving along their lines at daytime; tram 4
+header) shows a few hundred colored dots moving along their lines at daytime, and only
+the selected line's dots while a line is open (itinerary drawn → only its lines); tram 4
 stops Poštová/Vysoká/Blumentál/Centrum must sit on the drawn line **with no
 there-and-back hairpin near Poštová** (regression checks for the repair step); mobile
 drawer: drag works only on the handle (lists scroll without collapsing it), handle tap
-cycles peek→half→full, opening content pulls a peeking drawer to half.
+cycles peek→half→full, opening content pulls a peeking drawer to half, focusing a
+planner/search field pulls it to full (keyboard must not push the drawer off-screen —
+regression check on a real iPhone), and the map behind the drawer keeps taking taps
+(body pointer-events race); attribution card shows on first visit (top-left on
+mobile), ✕ collapses it to ⓘ and that survives reload, ⓘ reopens it.
