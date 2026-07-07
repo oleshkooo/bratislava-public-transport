@@ -26,6 +26,7 @@ import {
   type TransitLeg,
 } from "@/lib/raptor"
 import { haversineM, placeCoords } from "@/lib/geo"
+import { ensureWalkGraph, walkRoute } from "@/lib/walk"
 import type { StopIndexEntry } from "@/lib/types"
 import { SNAP_POINTS, useAppStore, type PlannerPlace } from "@/state/store"
 import { LineChip } from "@/features/lines/LineChip"
@@ -263,6 +264,7 @@ export function PlannerPanel() {
     loadPlanner()
       .then((d) => !cancelled && setPlanner(d))
       .catch(() => !cancelled && setLoadError(true))
+    void ensureWalkGraph() // warm up the footway graph for walking legs
     return () => {
       cancelled = true
     }
@@ -393,11 +395,16 @@ export function PlannerPanel() {
         const aPt = leg.fromStopId ? stopPt(leg.fromStopId) : originPt
         const bPt = leg.toStopId ? stopPt(leg.toStopId) : destPt
         if (aPt && bPt && (aPt[0] !== bPt[0] || aPt[1] !== bPt[1])) {
-          coords.push(aPt, bPt)
+          // Draw the walk along real streets when the footway graph is
+          // available; the straight dashed line is the fallback.
+          const graph = await ensureWalkGraph()
+          const routed = graph ? walkRoute(graph, aPt, bPt) : null
+          const lineCoords = routed?.coords ?? [aPt, bPt]
+          coords.push(...lineCoords)
           walk.push({
             type: "Feature",
             properties: {},
-            geometry: { type: "LineString", coordinates: [aPt, bPt] },
+            geometry: { type: "LineString", coordinates: lineCoords },
           })
         }
       }

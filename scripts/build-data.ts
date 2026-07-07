@@ -607,6 +607,188 @@ function repairGeometry(
   return { geometry, repairedStops, usedRails }
 }
 
+// ---------- pedestrian graph (walking legs in the trip planner) ----------
+
+/** Stops bbox + ~900 m margin (S,W,N,E) — recompute if the network grows. */
+const WALK_BBOX = "48.0137,16.9623,48.2495,17.2393"
+const OVERPASS_WALK_QUERY = `
+[out:json][timeout:600];
+way["highway"~"^(footway|path|pedestrian|steps|living_street|residential|service|track|cycleway|unclassified|tertiary|secondary|primary|tertiary_link|secondary_link|primary_link|corridor|bridleway|road)$"]["foot"!~"^(no|private)$"]["access"!~"^(no|private)$"](${WALK_BBOX});
+out geom;
+`
+/** Simplification tolerance for drawn shape; edge lengths use the raw shape. */
+const WALK_SIMPLIFY_M = 6
+
+const r5 = (n: number) => Math.round(n * 1e5) / 1e5
+/** ~1.1 m key precision merges shared OSM nodes (and near-touching ends). */
+const walkKey = (p: LonLat) => `${p[0].toFixed(5)},${p[1].toFixed(5)}`
+
+/** Flat compact graph the client routes over: nodes [lon,lat,…], edges [a,b,m,…]. */
+interface WalkGraphOut {
+  nodes: number[]
+  edges: number[]
+}
+
+/**
+ * Keep way endpoints + required interior points (junctions), then
+ * Douglas-Peucker the spans in between. Returns kept indices, ascending.
+ */
+function simplifyIndices(
+  coords: LonLat[],
+  requiredIdx: number[],
+  tolM: number
+): number[] {
+  const keep = new Array<boolean>(coords.length).fill(false)
+  keep[0] = true
+  keep[coords.length - 1] = true
+  for (const i of requiredIdx) keep[i] = true
+  const kx = 111320 * Math.cos((coords[0][1] * Math.PI) / 180)
+  const ky = 110574
+  const dp = (a: number, b: number) => {
+    if (b - a < 2) return
+    const ax = coords[a][0] * kx
+    const ay = coords[a][1] * ky
+    const bx = coords[b][0] * kx
+    const by = coords[b][1] * ky
+    const dx = bx - ax
+    const dy = by - ay
+    const l2 = dx * dx + dy * dy
+    let worst = -1
+    let worstD = tolM
+    for (let i = a + 1; i < b; i++) {
+      const px = coords[i][0] * kx
+      const py = coords[i][1] * ky
+      let t = l2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / l2
+      t = Math.max(0, Math.min(1, t))
+      const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+      if (d > worstD) {
+        worstD = d
+        worst = i
+      }
+    }
+    if (worst !== -1) {
+      keep[worst] = true
+      dp(a, worst)
+      dp(worst, b)
+    }
+  }
+  let prev = 0
+  for (let i = 1; i < coords.length; i++) {
+    if (keep[i]) {
+      dp(prev, i)
+      prev = i
+    }
+  }
+  const out: number[] = []
+  for (let i = 0; i < coords.length; i++) if (keep[i]) out.push(i)
+  return out
+}
+
+function buildWalkGraphData(ways: LonLat[][]): WalkGraphOut {
+  // Points seen more than once across all ways are junctions the
+  // simplification must never drop, or crossings would disconnect.
+  const usage = new Map<string, number>()
+  for (const way of ways) {
+    for (const p of way) {
+      const k = walkKey(p)
+      usage.set(k, (usage.get(k) ?? 0) + 1)
+    }
+  }
+  const nodeIdx = new Map<string, number>()
+  const nodes: number[] = []
+  const nodeAt = (p: LonLat): number => {
+    const k = walkKey(p)
+    let idx = nodeIdx.get(k)
+    if (idx === undefined) {
+      idx = nodes.length / 2
+      nodeIdx.set(k, idx)
+      nodes.push(r5(p[0]), r5(p[1]))
+    }
+    return idx
+  }
+  const edges: number[] = []
+  const edgeSeen = new Set<string>()
+  for (const way of ways) {
+    if (way.length < 2) continue
+    const requiredIdx: number[] = []
+    for (let i = 1; i < way.length - 1; i++) {
+      if ((usage.get(walkKey(way[i])) ?? 0) >= 2) requiredIdx.push(i)
+    }
+    const kept = simplifyIndices(way, requiredIdx, WALK_SIMPLIFY_M)
+    for (let j = 1; j < kept.length; j++) {
+      const a = kept[j - 1]
+      const b = kept[j]
+      let len = 0
+      for (let i = a + 1; i <= b; i++) len += haversine(way[i - 1], way[i])
+      const na = nodeAt(way[a])
+      const nb = nodeAt(way[b])
+      if (na === nb || len < 0.5) continue
+      const ek = na < nb ? `${na}_${nb}` : `${nb}_${na}`
+      if (edgeSeen.has(ek)) continue
+      edgeSeen.add(ek)
+      edges.push(na, nb, Math.round(len))
+    }
+  }
+  return { nodes, edges }
+}
+
+/** Compact pedestrian graph; null (with a warning) when no source is available. */
+async function loadWalkGraph(): Promise<WalkGraphOut | null> {
+  const cachePath = path.join(DATA_CACHE_DIR, "walk-graph.json")
+  const refresh = process.env.OSM_REFRESH === "1"
+  if (!refresh && fs.existsSync(cachePath)) {
+    return JSON.parse(fs.readFileSync(cachePath, "utf8"))
+  }
+  let raw: { elements: Record<string, unknown>[] } | undefined
+  const rawCachePath = path.join(CACHE_DIR, "walk-raw.json")
+  if (!refresh && fs.existsSync(rawCachePath)) {
+    raw = JSON.parse(fs.readFileSync(rawCachePath, "utf8"))
+  }
+  if (!raw) console.log("Fetching walkable ways from Overpass…")
+  for (const endpoint of raw ? [] : OVERPASS_ENDPOINTS) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "User-Agent": USER_AGENT,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "data=" + encodeURIComponent(OVERPASS_WALK_QUERY),
+        signal: AbortSignal.timeout(600_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const text = await res.text()
+      raw = JSON.parse(text) as typeof raw
+      fs.mkdirSync(CACHE_DIR, { recursive: true })
+      fs.writeFileSync(rawCachePath, text)
+      break
+    } catch (e) {
+      console.warn(`  Overpass ${endpoint} failed: ${e}`)
+    }
+  }
+  if (!raw) {
+    if (fs.existsSync(cachePath)) {
+      console.warn("  Overpass unavailable — using committed walk-graph cache")
+      return JSON.parse(fs.readFileSync(cachePath, "utf8"))
+    }
+    warn("no walk graph source — planner walking legs stay straight lines")
+    return null
+  }
+  const ways: LonLat[][] = []
+  for (const el of raw.elements) {
+    const geometry = el.geometry as { lat: number; lon: number }[] | undefined
+    if (!geometry || geometry.length < 2) continue
+    ways.push(geometry.map((g) => [g.lon, g.lat] as LonLat))
+  }
+  const graph = buildWalkGraphData(ways)
+  fs.mkdirSync(DATA_CACHE_DIR, { recursive: true })
+  fs.writeFileSync(cachePath, JSON.stringify(graph))
+  console.log(
+    `  walk graph: ${graph.nodes.length / 2} nodes, ${graph.edges.length / 3} edges`
+  )
+  return graph
+}
+
 // ---------- main ----------
 
 async function main() {
@@ -1238,6 +1420,15 @@ async function main() {
       transfers,
     })
   )
+
+  // walk-graph.json — pedestrian network for routed walking legs
+  const walkGraph = await loadWalkGraph()
+  if (walkGraph) {
+    fs.writeFileSync(
+      path.join(OUT_DIR, "walk-graph.json"),
+      JSON.stringify(walkGraph)
+    )
+  }
 
   // --- summary ---
   const dirCount = [...lineDirections.values()].reduce(

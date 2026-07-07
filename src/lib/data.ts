@@ -33,5 +33,7 @@ export const loadStopDetail = (id: string) =>
   fetchJson<StopDetail>(`stops/${encodeURIComponent(id)}.json`)
 export const loadPlanner = () =>
   fetchJson<import("./raptor").PlannerData>("planner.json")
+export const loadWalkGraphData = () =>
+  fetchJson<import("./walk").WalkGraphData>("walk-graph.json")
 
 export const allRoutesGeojsonUrl = `${BASE}all-routes.geojson`
