@@ -23,6 +23,8 @@ export interface VehicleContext {
   /** direction geometry, or null while it is still loading */
   patternGeom: (line: string, dir: number) => LonLat[] | null
   lineColor: (line: string) => { color: string; textColor: string }
+  /** when set, only these lines get vehicles (selected line / itinerary) */
+  lineFilter?: ReadonlySet<string> | null
 }
 
 const TRIP_TIMES_OFFSET = 2
@@ -107,6 +109,7 @@ export function computeVehicles(ctx: VehicleContext): Feature[] {
   const { planner, nowSec } = ctx
   for (let p = 0; p < planner.patterns.length; p++) {
     const pattern = planner.patterns[p]
+    if (ctx.lineFilter && !ctx.lineFilter.has(pattern.line)) continue
     const nStops = pattern.stops.length
     let track: PatternTrack | null = null
     for (const trip of pattern.trips) {

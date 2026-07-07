@@ -8,6 +8,7 @@ import { placeCoords } from "@/lib/geo"
 import { activeServiceIds, bratislavaNow, previousDateKey } from "@/lib/service-day"
 import { computeVehicles } from "@/features/vehicles/vehicles"
 import { useAppStore } from "@/state/store"
+import type { ItineraryOverlay, View } from "@/state/store"
 import { useResolvedDark } from "@/lib/use-resolved-dark"
 
 const LIGHT_STYLE = "https://tiles.openfreemap.org/styles/positron"
@@ -361,6 +362,28 @@ function addTransitLayers(map: MlMap, dark: boolean) {
   })
 }
 
+/**
+ * Lines the vehicle markers are limited to, comma-joined (a primitive so the
+ * vehicles effect only restarts when the filter actually changes), or null
+ * for all lines. Mirrors the overview-dimming rule: the selected line, or the
+ * lines of the drawn itinerary ("" while a walk-only itinerary is shown).
+ */
+function vehicleFilterKey(
+  view: View,
+  overlay: ItineraryOverlay | null
+): string | null {
+  if (view.kind === "line") return view.lineId
+  if (view.kind === "plan" && overlay) {
+    const lines = new Set<string>()
+    for (const f of overlay.transit) {
+      const line = f.properties?.line
+      if (typeof line === "string") lines.add(line)
+    }
+    return [...lines].sort().join(",")
+  }
+  return null
+}
+
 export function MapView() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MlMap | null>(null)
@@ -666,6 +689,7 @@ export function MapView() {
   }, [mapPick])
 
   // --- schedule-interpolated vehicle positions (pseudo-realtime) ---
+  const vehicleLineKey = vehicleFilterKey(view, itineraryOverlay)
   useEffect(() => {
     const map = mapRef.current
     if (!map || epoch === 0) return
@@ -678,6 +702,10 @@ export function MapView() {
       setVehicles([])
       return
     }
+    const lineFilter =
+      vehicleLineKey === null
+        ? null
+        : new Set(vehicleLineKey.split(",").filter(Boolean))
     let cancelled = false
     // direction geometries load lazily as vehicles on those lines appear
     const geoms = new Map<string, [number, number][] | null>()
@@ -730,6 +758,7 @@ export function MapView() {
             color: `#${lineMeta.get(line)?.color ?? "888888"}`,
             textColor: `#${lineMeta.get(line)?.textColor ?? "FFFFFF"}`,
           }),
+          lineFilter,
         })
       )
     }
@@ -744,7 +773,7 @@ export function MapView() {
       window.clearInterval(interval)
       setVehicles([])
     }
-  }, [epoch, showVehicles, calendar, stopsById, routesIndex])
+  }, [epoch, showVehicles, calendar, stopsById, routesIndex, vehicleLineKey])
 
   // --- selected stop highlight ---
   useEffect(() => {

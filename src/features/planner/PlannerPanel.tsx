@@ -387,6 +387,7 @@ export function PlannerPanel() {
         transit.push({
           type: "Feature",
           properties: {
+            line: leg.line,
             color: `#${lineMeta.get(leg.line)?.color ?? "888888"}`,
           },
           geometry: { type: "LineString", coordinates: line },
