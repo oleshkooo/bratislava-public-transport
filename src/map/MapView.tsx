@@ -476,11 +476,15 @@ export function MapView() {
   useEffect(() => {
     const map = mapRef.current
     if (!map || epoch === 0) return
-    const lineActive = view.kind === "line"
+    // A selected line or a drawn planner itinerary takes focus: fade the
+    // overview layer way down and drop the stop dots so the route reads.
+    const focusActive =
+      view.kind === "line" ||
+      (view.kind === "plan" && itineraryOverlay !== null)
     map.setPaintProperty(
       "routes-line",
       "line-opacity",
-      lineActive ? 0.1 : palette(dark).routeOpacity
+      focusActive ? 0.08 : palette(dark).routeOpacity
     )
     map.setLayoutProperty(
       "routes-line",
@@ -496,10 +500,10 @@ export function MapView() {
       map.setLayoutProperty(
         layer,
         "visibility",
-        showStops && !lineActive ? "visible" : "none"
+        showStops && !focusActive ? "visible" : "none"
       )
     }
-  }, [epoch, showRoutes, showStops, view.kind, dark])
+  }, [epoch, showRoutes, showStops, view.kind, itineraryOverlay, dark])
 
   // --- selected line: geometry + its stops + fit bounds ---
   useEffect(() => {
