@@ -8,6 +8,7 @@ import { useTheme } from "@/components/theme-provider"
 import { useResolvedDark } from "@/lib/use-resolved-dark"
 import { useMediaQuery } from "@/lib/use-media-query"
 import { MapView } from "@/map/MapView"
+import { MapAttribution } from "@/map/MapAttribution"
 import { LinesMenu } from "@/features/lines/LinesMenu"
 import { LinePanel } from "@/features/lines/LinePanel"
 import { StopPanel } from "@/features/stops/StopPanel"
@@ -162,6 +163,7 @@ export default function App() {
   return (
     <div className="relative h-dvh w-full overflow-hidden">
       <MapView />
+      <MapAttribution />
 
       {isDesktop ? (
         <div className="absolute top-3 bottom-3 left-3 z-10 flex w-[400px] flex-col rounded-xl border bg-background/95 shadow-xl backdrop-blur-sm">

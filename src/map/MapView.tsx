@@ -421,10 +421,9 @@ export function MapView() {
       center: BRATISLAVA_CENTER,
       zoom: 12.2,
       minZoom: 9,
-      attributionControl: {
-        customAttribution:
-          'Transit data: <a href="https://www.idsbk.sk">Dopravný podnik Bratislava / IDS BK</a> (CC-BY 4.0)',
-      },
+      // Attribution is our own dismissible <MapAttribution /> (the default
+      // control's spot is covered by the mobile drawer).
+      attributionControl: false,
     })
     mapRef.current = map
     if (import.meta.env.DEV) {
