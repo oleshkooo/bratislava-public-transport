@@ -127,7 +127,7 @@ export function LinePanel() {
           <ScrollArea className="min-h-0 flex-1">
             <div className="relative pr-2 pl-1">
               <div
-                className="absolute top-3 bottom-3 left-[7px] w-0.5 rounded"
+                className="absolute top-3 bottom-3 left-[11px] w-0.5 rounded"
                 style={{ backgroundColor: `#${meta.color}` }}
               />
               {dir.stops.map((stopId, i) => {
