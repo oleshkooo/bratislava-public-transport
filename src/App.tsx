@@ -121,6 +121,11 @@ function MobileDrawer() {
       handleOnly
       snapPoints={SNAP_POINTS}
       activeSnapPoint={snap}
+      // vaul's own keyboard handling recomputes the transform against the
+      // shrunken visualViewport and throws a snap-point drawer off-screen on
+      // iOS — disabled; instead any focused text field pulls the drawer to
+      // the full snap (onFocus below) so it sits above the keyboard.
+      repositionInputs={false}
       // Tapping the handle at the top snap cycles past the end of the list —
       // vaul hands us undefined there; treat it as "collapse back to peek".
       setActiveSnapPoint={(s) => setSnap(s ?? SNAP_POINTS[0])}
@@ -129,6 +134,9 @@ function MobileDrawer() {
         <Drawer.Content
           className="fixed inset-x-0 bottom-0 z-20 flex h-[94dvh] flex-col rounded-t-2xl border-t bg-background shadow-[0_-4px_16px_rgba(0,0,0,0.12)] outline-none"
           aria-describedby={undefined}
+          onFocus={(e) => {
+            if (e.target.matches("input, textarea")) setSnap(SNAP_POINTS[2])
+          }}
         >
           <Drawer.Title className="sr-only">
             Bratislava transit map panel
