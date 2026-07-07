@@ -44,6 +44,10 @@ const LENGTH_RATIO_BOUNDS: [number, number] = [0.9, 1.8]
 /** Stops farther than this from the matched polyline trigger geometry repair
  *  (e.g. GTFS runs a diversion that OSM doesn't have — trams 3/4 "Výluka Centrum"). */
 const REPAIR_THRESHOLD_M = 150
+/** Polyline ends farther than this from the route's terminus stop get trimmed
+ *  back to the closest pass (OSM relations sometimes run past the GTFS terminus —
+ *  79 dir 1 continues 3.3 km to Čiližská while GTFS ends at Stn. P. Biskupice). */
+const TRIM_TAIL_M = 200
 const OVERPASS_RAILS_QUERY = `
 [out:json][timeout:120];
 way["railway"="tram"](48.0,16.9,48.3,17.3);
@@ -357,29 +361,33 @@ function buildRailGraph(ways: LonLat[][]): RailGraph {
   return { nodes, adj }
 }
 
-function nearestRailNode(
+/** Up to k rail nodes within maxM of p, nearest first. Parallel tracks of one
+ *  street are separate OSM ways, so the single nearest node can sit on the
+ *  opposite-direction track — callers must get alternatives to choose from. */
+function nearestRailNodes(
   graph: RailGraph,
   p: LonLat,
-  maxM = 120
-): string | null {
-  let best: string | null = null
-  let bestD = maxM
+  maxM = 120,
+  k = 6
+): string[] {
+  const near: [number, string][] = []
   for (const [key, coord] of graph.nodes) {
     const d = haversine(p, coord)
-    if (d < bestD) {
-      bestD = d
-      best = key
-    }
+    if (d < maxM) near.push([d, key])
   }
-  return best
+  near.sort((a, b) => a[0] - b[0])
+  return near.slice(0, k).map(([, key]) => key)
 }
 
-/** Dijkstra over the rail graph with a small binary heap. */
-function railShortestPath(
+/** Dijkstra over the rail graph with a small binary heap; one source, many
+ *  targets — returns length + reconstructed path for every reachable target. */
+function railShortestPaths(
   graph: RailGraph,
   fromKey: string,
-  toKey: string
-): LonLat[] | null {
+  toKeys: string[]
+): Map<string, { len: number; path: LonLat[] }> {
+  const targets = new Set(toKeys)
+  const settled = new Set<string>()
   const dist = new Map<string, number>()
   const prev = new Map<string, string>()
   const heap: [number, string][] = [[0, fromKey]]
@@ -416,8 +424,11 @@ function railShortestPath(
   }
   while (heap.length > 0) {
     const [d, key] = pop()!
-    if (key === toKey) break
     if (d > (dist.get(key) ?? Infinity)) continue
+    if (targets.has(key)) {
+      settled.add(key)
+      if (settled.size === targets.size) break
+    }
     for (const [next, w] of graph.adj.get(key) ?? []) {
       const nd = d + w
       if (nd < (dist.get(next) ?? Infinity)) {
@@ -427,35 +438,71 @@ function railShortestPath(
       }
     }
   }
-  if (!dist.has(toKey)) return null
-  const path: LonLat[] = []
-  let cur: string | undefined = toKey
-  while (cur) {
-    path.unshift(graph.nodes.get(cur)!)
-    cur = prev.get(cur)
+  const out = new Map<string, { len: number; path: LonLat[] }>()
+  for (const toKey of targets) {
+    const len = dist.get(toKey)
+    if (len === undefined) continue
+    const path: LonLat[] = []
+    let cur: string | undefined = toKey
+    while (cur) {
+      path.unshift(graph.nodes.get(cur)!)
+      cur = prev.get(cur)
+    }
+    out.set(toKey, { len, path })
   }
-  return path
+  return out
 }
 
-/** Route consecutive waypoints through the rail network; null if any hop fails. */
+/**
+ * Route consecutive waypoints through the rail network; null if any hop fails.
+ * Every waypoint gets several candidate nodes and the combination with the
+ * shortest total path wins (DP leg by leg). Snapping each waypoint to its
+ * single nearest node instead can land a stop on the opposite-direction track,
+ * which forces a there-and-back spur in the spliced geometry.
+ */
 function railPathThrough(
   graph: RailGraph,
   waypoints: LonLat[]
 ): LonLat[] | null {
-  const out: LonLat[] = []
+  const candidates = waypoints.map((p) => nearestRailNodes(graph, p))
+  if (candidates.some((c) => c.length === 0)) return null
   let chordLen = 0
   for (let i = 1; i < waypoints.length; i++)
     chordLen += haversine(waypoints[i - 1], waypoints[i])
+
+  // len includes waypoint→node attach distances so that, ceteris paribus,
+  // the node right next to the stop still beats one farther down the track
+  let states = candidates[0].map((key) => ({
+    key,
+    len: haversine(waypoints[0], graph.nodes.get(key)!),
+    path: [graph.nodes.get(key)!],
+  }))
   for (let i = 1; i < waypoints.length; i++) {
-    const a = nearestRailNode(graph, waypoints[i - 1])
-    const b = nearestRailNode(graph, waypoints[i])
-    if (!a || !b) return null
-    const seg = railShortestPath(graph, a, b)
-    if (!seg) return null
-    out.push(...(out.length > 0 ? seg.slice(1) : seg))
+    const nextStates = candidates[i].map((key) => ({
+      key,
+      len: Infinity,
+      path: [] as LonLat[],
+    }))
+    for (const s of states) {
+      if (!Number.isFinite(s.len)) continue
+      const legs = railShortestPaths(graph, s.key, candidates[i])
+      for (const ns of nextStates) {
+        const leg = legs.get(ns.key)
+        if (!leg) continue
+        const total =
+          s.len + leg.len + haversine(waypoints[i], graph.nodes.get(ns.key)!)
+        if (total < ns.len) {
+          ns.len = total
+          ns.path = [...s.path, ...leg.path.slice(1)]
+        }
+      }
+    }
+    states = nextStates
   }
-  if (polylineLength(out) > chordLen * 3 + 500) return null // suspicious detour
-  return out
+  const best = states.reduce((a, b) => (b.len < a.len ? b : a))
+  if (!Number.isFinite(best.len)) return null
+  if (polylineLength(best.path) > chordLen * 3 + 500) return null // suspicious detour
+  return best.path
 }
 
 const nearestVertexIdx = (coords: LonLat[], p: LonLat): number => {
@@ -469,6 +516,47 @@ const nearestVertexIdx = (coords: LonLat[], p: LonLat): number => {
     }
   }
   return best
+}
+
+/**
+ * Cut polyline ends that run past the route's termini. Only ends farther than
+ * TRIM_TAIL_M from the first/last stop are touched, cut at the polyline's
+ * closest pass by that stop (ties resolved toward keeping more route). The trim
+ * is reverted if it moves any stop away from the line — that guards loop-shaped
+ * routes where first and last stop share a location.
+ */
+function trimToTermini(
+  geometry: LonLat[],
+  stopPts: { pt: LonLat; name: string }[]
+): LonLat[] {
+  if (geometry.length < 2 || stopPts.length < 2) return geometry
+  const firstPt = stopPts[0].pt
+  const lastPt = stopPts[stopPts.length - 1].pt
+  let start = 0
+  let end = geometry.length - 1
+  if (haversine(firstPt, geometry[0]) > TRIM_TAIL_M) {
+    const dists = geometry.map((v) => haversine(firstPt, v))
+    const min = Math.min(...dists)
+    start = dists.findIndex((d) => d <= min + 25)
+  }
+  if (haversine(lastPt, geometry[end]) > TRIM_TAIL_M) {
+    const dists = geometry.map((v) => haversine(lastPt, v))
+    const min = Math.min(...dists)
+    for (let i = dists.length - 1; i >= 0; i--) {
+      if (dists[i] <= min + 25) {
+        end = i
+        break
+      }
+    }
+  }
+  if (start === 0 && end === geometry.length - 1) return geometry
+  if (end - start < 2) return geometry // degenerate cut — leave as is
+  const trimmed = geometry.slice(start, end + 1)
+  for (const s of stopPts) {
+    if (pointToPolylineM(s.pt, trimmed) > pointToPolylineM(s.pt, geometry) + 1)
+      return geometry
+  }
+  return trimmed
 }
 
 /**
@@ -786,6 +874,14 @@ async function main() {
     // Validation — demote to GTFS shape when the OSM match is clearly wrong
     // (e.g. lines 53/57/69 have a single OSM relation; the other direction must not reuse it)
     if (geometrySource === "osm") {
+      const untrimmed = geometry
+      geometry = trimToTermini(geometry, modalStopPts)
+      if (geometry !== untrimmed) {
+        warn(
+          `line ${line.name} dir ${dirStr}: trimmed OSM polyline past the ` +
+            `termini (${Math.round(polylineLength(untrimmed) - polylineLength(geometry))} m cut)`
+        )
+      }
       const gtfsShape = shapes.get(shapeId) ?? []
       const gtfsLen = polylineLength(gtfsShape)
       const osmLen = polylineLength(geometry)
@@ -825,6 +921,9 @@ async function main() {
               `${[...new Set(repair.repairedStops)].join(", ")} ` +
               `(${repair.usedRails ? "via tram tracks" : "straight splice"})`
           )
+          // A spliced terminus (151's Česká) only lands on the line now —
+          // re-trim so the polyline doesn't reach back past it.
+          geometry = trimToTermini(geometry, modalStopPts)
         } else if (worst > STOP_TO_LINE_WARN_M) {
           warn(
             `line ${line.name} dir ${dirStr}: stop up to ${Math.round(worst)} m from polyline`
